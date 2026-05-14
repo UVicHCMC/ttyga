@@ -12,6 +12,14 @@ Adjustments/new features
 10) Open in Nautilus works for profiles that just cd somewhere, but not for 'cd /path/to/dir && claude' of ssh items.
 11) Change ctrl+w, ctrl+t, etc. back to standard ctrl+shift versions - too complicated to remember
 
+12) Add search to help
+13) is split panes working? How do I make it work?
+
+
+Bugs
+====
+1) going to a remote location and clicking the open in file explorer button opens my homedir, not the remote dir. I though this was working?
+
 x) look at switching from yaml to toml or json for profiles - it will enable the removal of the 3rd party lib 'yaml'
 x) look at switching to Mosh+Eternal terminal
 x) Is GPU acceleration worth looking at?

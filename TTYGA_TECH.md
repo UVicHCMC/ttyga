@@ -125,6 +125,8 @@ After editing by hand, press **Ctrl+Alt+R** to reload without restarting.
 | `tmux_session` | no | tmux session name (default: `main`); only used when `tmux: true` |
 | `options` | yes | Type-specific settings — see below |
 | `classifier` | no | Controls the tab label |
+| `extends` | no | Name of another profile to inherit from — see *Profile inheritance* below |
+| `hidden` | no | `true` to hide this profile from the sidebar (useful for base profiles) |
 
 ### SSH profiles
 
@@ -308,6 +310,40 @@ Recent values are persisted in `app_state.json` and restored the next time the s
 ```
 
 The `variables:` block is edited by hand in YAML; the profile editor does not yet have a UI for it.
+
+---
+
+### Profile inheritance
+
+A profile can inherit fields from another profile using `extends`. The named parent profile is resolved at load time; the child wins on any field that is explicitly set, and dict fields (`options`, `env`, `variables`) are deep-merged so a child can add keys without repeating the entire block.
+
+```yaml
+- name: prod-base
+  hidden: true          # keep this off the sidebar
+  type: ssh
+  color: '#e01b24'
+  options:
+    host: prod.example.com
+    user: deploy
+
+- name: Prod — shell
+  group: Remote
+  extends: prod-base    # inherits host, user, color
+
+- name: Prod — htop
+  group: Remote
+  extends: prod-base
+  type: clippet         # overrides the parent's type
+  options:
+    command: htop
+    auto_execute: true
+```
+
+Rules:
+- `name` and `group` are never inherited (each profile always has its own).
+- `extends` is resolved away in the merged result — it does not appear at runtime.
+- Chains are supported (A extends B extends C); cycles are detected and logged as warnings.
+- `hidden: true` on the parent does not affect children — each controls its own visibility.
 
 ---
 

@@ -30,6 +30,21 @@ A profile is a saved action — either an SSH connection or a shell command. Cli
 
 An SSH profile stores a hostname and optional username and port. Clicking it opens a new tab and runs `ssh user@host`. The tab label shows `user@host` automatically.
 
+### Mosh and Eternal Terminal
+
+**Mosh** and **Eternal Terminal (et)** are SSH replacements that survive network drops and roaming. ttyga supports both — create a **clippet** profile with the connection command:
+
+- Mosh: `mosh user@host`
+- Eternal Terminal: `et user@host`
+
+Both tools must be installed on the remote server. Enable **tmux** in the profile's launch settings for a fully persistent session that reconnects even if the local machine sleeps or the network changes:
+
+```
+mosh user@host -- tmux attach -t main || tmux new -s main
+```
+
+Mosh and Eternal Terminal profiles show a dim dot (not green) in the tab bar because ttyga tracks SSH sessions specifically. This is a display-only difference — the connection behaves the same.
+
 ### Clippet profiles
 
 A clippet profile stores a shell command. Clicking it opens a new tab with the command ready in the prompt. You can review it before pressing Enter, or set **Auto-execute** to have it run immediately.
@@ -216,3 +231,142 @@ Open via the hamburger menu → **Preferences**.
 All profiles are stored in `~/.config/ttyga/profiles.yaml`. You can edit this file directly in any text editor — it is plain YAML. After saving, press **Ctrl+Alt+R** in ttyga to reload without restarting.
 
 For full details of the YAML structure and every available field, see `TTYGA_TECH.md`.
+
+---
+
+## Profile examples
+
+### Basic SSH connection
+
+```yaml
+- name: Work server
+  group: Remote
+  type: ssh
+  icon: network-server-symbolic
+  options:
+    host: work.example.com
+    user: greg
+    port: 2222
+```
+
+### SSH using a ~/.ssh/config alias
+
+Leave `user` and `port` blank — ssh resolves them from your config file. Use **From SSH config…** in the editor to auto-populate.
+
+```yaml
+- name: Prod
+  group: Remote
+  type: ssh
+  icon: network-server-symbolic
+  color: '#e01b24'
+  options:
+    host: prod
+```
+
+### Clippet — paste and review
+
+The command lands in the prompt. Press Enter when ready.
+
+```yaml
+- name: Recent git log
+  group: Dev
+  type: clippet
+  icon: folder-symbolic
+  cwd: ~/projects/myapp
+  options:
+    command: git log --oneline -20
+```
+
+### Clippet — run immediately
+
+```yaml
+- name: Disk usage
+  group: Utilities
+  type: clippet
+  options:
+    command: df -h
+    auto_execute: true
+```
+
+### Clippet — run in current tab
+
+Short utility commands that don't need their own tab.
+
+```yaml
+- name: Clear screen
+  group: Utilities
+  type: clippet
+  options:
+    command: clear
+    auto_execute: true
+    in_place: true
+```
+
+### Profile with variables
+
+A dialog prompts for `@container` before launching.
+
+```yaml
+- name: Docker logs
+  group: Containers
+  type: clippet
+  options:
+    command: docker logs -f @container
+    auto_execute: true
+  variables:
+    container:
+      prompt: Container name
+      default: nginx
+```
+
+### Mosh connection with tmux persistence
+
+```yaml
+- name: Work (Mosh)
+  group: Remote
+  type: clippet
+  icon: network-wireless-symbolic
+  options:
+    command: mosh greg@work.example.com -- tmux attach -t main || tmux new -s main
+    auto_execute: true
+```
+
+### Profile inheritance
+
+Define a base profile once; child profiles inherit and extend it. Set `hidden: true` to keep the base off the sidebar.
+
+```yaml
+- name: prod-base
+  hidden: true
+  type: ssh
+  options:
+    host: prod.example.com
+    user: greg
+
+- name: Prod — shell
+  group: Remote
+  extends: prod-base
+  color: '#e01b24'
+
+- name: Prod — htop
+  group: Remote
+  extends: prod-base
+  type: clippet
+  color: '#e01b24'
+  options:
+    command: htop
+    auto_execute: true
+```
+
+### SSH tab with custom classifier
+
+```yaml
+- name: Lab
+  group: Remote
+  type: ssh
+  options:
+    host: cadfael.local
+    user: greg
+  classifier:
+    title: "Lab (@host)"
+```

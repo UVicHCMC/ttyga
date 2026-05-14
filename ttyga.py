@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -149,6 +149,48 @@ def _parse_groups(config):
         elif isinstance(entry, str) and entry:
             names.append(entry)
     return names, icons
+
+def _resolve_inheritance(profiles):
+    """Resolve extends: chains and return a new flat list.
+
+    Child fields win on conflict; dict fields (options, env, variables) are
+    deep-merged so children can add keys without repeating the whole block.
+    Profiles with hidden: true are preserved — callers filter them for display.
+    """
+    by_name = {p.get('name'): p for p in profiles if p.get('name')}
+
+    def _merge(profile, seen):
+        parent_name = profile.get('extends')
+        if not parent_name:
+            r = dict(profile)
+            r.pop('extends', None)
+            return r
+        name = profile.get('name', '')
+        if parent_name in seen:
+            logger.warning("Profile inheritance cycle: %r → %r", name, parent_name)
+            r = dict(profile)
+            r.pop('extends', None)
+            return r
+        parent_raw = by_name.get(parent_name)
+        if not parent_raw:
+            logger.warning("Profile %r extends unknown profile %r", name, parent_name)
+            r = dict(profile)
+            r.pop('extends', None)
+            return r
+        parent = _merge(parent_raw, seen | {parent_name})
+        merged = dict(parent)
+        merged.pop('extends', None)
+        for key, val in profile.items():
+            if key == 'extends':
+                continue
+            if isinstance(val, dict) and isinstance(merged.get(key), dict):
+                merged[key] = {**merged[key], **val}
+            else:
+                merged[key] = val
+        return merged
+
+    return [_merge(p, {p.get('name', '')}) for p in profiles]
+
 
 SCROLLBACK_MIN   = 100
 SCROLLBACK_MAX   = 1_000_000
@@ -442,6 +484,17 @@ button.suggested-action {{
 button.suggested-action:hover {{
     background: shade({t['accent']}, 1.15);
     color: {t['accent_fg']};
+}}
+
+/* Sidebar watermark ------------------------------------------------------- */
+
+.sidebar-watermark {{
+    opacity: 0.18;
+}}
+.sidebar-watermark-label {{
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.1em;
 }}
 
 /* Sidebar resize handle --------------------------------------------------- */
@@ -1649,29 +1702,45 @@ class HelpWindow(Adw.Window):
     def __init__(self, parent):
         super().__init__(title="ttyga Help", transient_for=parent, modal=False)
         self.set_default_size(720, 640)
+        self._search_iters = []
+        self._search_pos = 0
 
         toolbar = Adw.ToolbarView()
         self.set_content(toolbar)
         toolbar.add_top_bar(Adw.HeaderBar())
 
+        self._search_bar = Gtk.SearchBar()
+        self._search_bar.set_show_close_button(True)
+        self._search_bar.set_key_capture_widget(self)
+        self._search_entry = Gtk.SearchEntry()
+        self._search_entry.set_size_request(300, -1)
+        self._search_entry.connect('search-changed', self._on_search_changed)
+        self._search_entry.connect('next-match', self._go_next)
+        self._search_entry.connect('previous-match', self._go_prev)
+        self._search_entry.connect('stop-search', self._on_search_stop)
+        self._search_bar.set_child(self._search_entry)
+        self._search_bar.connect_entry(self._search_entry)
+        toolbar.add_top_bar(self._search_bar)
+
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_vexpand(True)
+        self._scroll = scroll
 
-        tv = Gtk.TextView()
-        tv.set_editable(False)
-        tv.set_cursor_visible(False)
-        tv.set_wrap_mode(Gtk.WrapMode.WORD)
-        tv.set_left_margin(36)
-        tv.set_right_margin(36)
-        tv.set_top_margin(24)
-        tv.set_bottom_margin(24)
+        self.tv = Gtk.TextView()
+        self.tv.set_editable(False)
+        self.tv.set_cursor_visible(False)
+        self.tv.set_wrap_mode(Gtk.WrapMode.WORD)
+        self.tv.set_left_margin(36)
+        self.tv.set_right_margin(36)
+        self.tv.set_top_margin(24)
+        self.tv.set_bottom_margin(24)
 
-        buf = tv.get_buffer()
-        self._define_tags(buf)
-        self._populate(buf)
+        self.buf = self.tv.get_buffer()
+        self._define_tags(self.buf)
+        self._populate(self.buf)
 
-        scroll.set_child(tv)
+        scroll.set_child(self.tv)
         toolbar.set_content(scroll)
 
     def _define_tags(self, buf):
@@ -1687,6 +1756,7 @@ class HelpWindow(Adw.Window):
         buf.create_tag('bold', weight=Pango.Weight.BOLD)
         buf.create_tag('dim', foreground='gray', scale=0.85)
         buf.create_tag('bullet', left_margin=48, indent=-12)
+        buf.create_tag('search_hit', background='#f9f06b', foreground='#1a1a2e')
 
     def _apply(self, buf, text, *tag_names):
         start = buf.get_end_iter().get_offset()
@@ -1790,6 +1860,55 @@ class HelpWindow(Adw.Window):
 
         flush_table()
 
+    # ----- search ------------------------------------------------------------
+
+    def _on_search_changed(self, entry):
+        query = entry.get_text().strip()
+        self._clear_highlights()
+        self._search_iters = []
+        self._search_pos = 0
+        if not query:
+            return
+        start = self.buf.get_start_iter()
+        while True:
+            result = start.forward_search(
+                query, Gtk.TextSearchFlags.CASE_INSENSITIVE, None)
+            if not result:
+                break
+            match_start, match_end = result
+            self.buf.apply_tag_by_name('search_hit', match_start, match_end)
+            self._search_iters.append(
+                (match_start.get_offset(), match_end.get_offset()))
+            start = match_end
+        if self._search_iters:
+            self._scroll_to_match(0)
+
+    def _clear_highlights(self):
+        self.buf.remove_tag_by_name(
+            'search_hit', self.buf.get_start_iter(), self.buf.get_end_iter())
+
+    def _go_next(self, *args):
+        if not self._search_iters:
+            return
+        self._search_pos = (self._search_pos + 1) % len(self._search_iters)
+        self._scroll_to_match(self._search_pos)
+
+    def _go_prev(self, *args):
+        if not self._search_iters:
+            return
+        self._search_pos = (self._search_pos - 1) % len(self._search_iters)
+        self._scroll_to_match(self._search_pos)
+
+    def _scroll_to_match(self, idx):
+        off_start, _ = self._search_iters[idx]
+        it = self.buf.get_iter_at_offset(off_start)
+        self.tv.scroll_to_iter(it, 0.1, True, 0.0, 0.3)
+
+    def _on_search_stop(self, *args):
+        self._search_bar.set_search_mode(False)
+        self._clear_highlights()
+        self.tv.grab_focus()
+
 
 # ---------------------------------------------------------------------------
 # Application
@@ -1827,6 +1946,10 @@ class DevFrame(Adw.Application):
             except FileNotFoundError:
                 continue
         return {"profiles": []}
+
+    def load_resolved_config(self):
+        config = self.load_config()
+        return {**config, 'profiles': _resolve_inheritance(config.get('profiles', []))}
 
     def _load_settings(self):
         try:
@@ -2175,7 +2298,7 @@ class DevFrame(Adw.Application):
         open_tabs = state.get('open_tabs', []) if self.settings.get('restore_tabs', True) else []
         active_tab_index = state.get('active_tab_index', -1)
         if open_tabs:
-            config = self.load_config()
+            config = self.load_resolved_config()
             by_key = {(p.get('name'), p.get('group', 'General')): p
                       for p in config.get('profiles', [])}
             for entry in open_tabs:
@@ -2259,6 +2382,20 @@ class DevFrame(Adw.Application):
         self.sidebar_box.set_margin_end(6)
         sidebar_scroll.set_child(self.sidebar_box)
         sidebar_inner.append(sidebar_scroll)
+
+        wm_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        wm_box.add_css_class('sidebar-watermark')
+        wm_box.set_halign(Gtk.Align.CENTER)
+        wm_box.set_margin_top(6)
+        wm_box.set_margin_bottom(12)
+        wm_img = Gtk.Image.new_from_icon_name(APP_ID)
+        wm_img.set_pixel_size(22)
+        wm_box.append(wm_img)
+        wm_lbl = Gtk.Label(label=APP_NAME)
+        wm_lbl.add_css_class('sidebar-watermark-label')
+        wm_box.append(wm_lbl)
+        sidebar_inner.append(wm_box)
+
         sidebar_outer.append(sidebar_inner)
 
         # Drag handle
@@ -3020,10 +3157,12 @@ class DevFrame(Adw.Application):
         if state is None:
             state = self.load_state()
 
-        config = self.load_config()
+        config = self.load_resolved_config()
         _, group_icons = _parse_groups(config)
         groups = {}
         for p in config.get('profiles', []):
+            if p.get('hidden'):
+                continue
             g_name = p.get('group', 'General')
             groups.setdefault(g_name, []).append(p)
 

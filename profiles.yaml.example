@@ -7,6 +7,8 @@ groups:
   - Maintenance
   - Remote
   - Projects
+  - Docker
+  - Bases
 
 profiles:
 
@@ -110,26 +112,51 @@ profiles:
     classifier:
       title: DB — @host
 
-  # SSH using a project-specific username (e.g. shared NFS account).
-  - name: Project X on NFS
+  # SSH with per-profile colour and persistent tmux session.
+  # Tab dot turns red; reconnects to the same tmux session on relaunch.
+  - name: Production
+    group: Remote
+    type: ssh
+    icon: network-server-symbolic
+    color: '#e01b24'
+    tmux: true
+    tmux_session: prod
+    options:
+      host: prod.example.com
+      user: deploy
+
+  # Mosh connection with tmux — survives network drops and roaming.
+  # Type is clippet because mosh is a command, not a direct SSH connection.
+  - name: Work (Mosh)
+    group: Remote
+    type: clippet
+    icon: network-wireless-symbolic
+    options:
+      command: mosh deploy@work.example.com -- tmux attach -t main || tmux new -s main
+      auto_execute: true
+
+  # SSH using a ~/.ssh/config alias — user and port come from the config file.
+  - name: Project X
     group: Remote
     type: ssh
     icon: folder-remote-symbolic
     options:
-      host: nfs.example.com
-      user: projectx
+      host: project-x    # alias defined in ~/.ssh/config
 
   # ------------------------------------------------------------------
   # Projects — open a local project directory in a new tab
   # ------------------------------------------------------------------
 
-  # cd into a project folder and open a shell there.
+  # Open a project directory with a custom environment variable.
   - name: My Project
     group: Projects
     type: clippet
     icon: folder-symbolic
+    cwd: ~/Projects/my-project
+    env:
+      KUBECONFIG: ~/.kube/dev
     options:
-      command: cd /home/user/Projects/my-project
+      command: git status
       auto_execute: true
 
   # Launch a tool inside a project directory.
@@ -137,8 +164,68 @@ profiles:
     group: Projects
     type: clippet
     icon: text-editor-symbolic
+    cwd: ~/Projects/my-project
     options:
-      command: cd /home/user/Projects/my-project && code .
+      command: code .
       auto_execute: true
+      in_place: true
     classifier:
       title: code my-project
+
+  # ------------------------------------------------------------------
+  # Docker — variable prompts let one profile cover many containers
+  # ------------------------------------------------------------------
+
+  # Prompted variable: a dialog asks for the container name before launch.
+  # Recent values are remembered and pre-filled next time.
+  - name: Container logs
+    group: Docker
+    type: clippet
+    icon: utilities-system-monitor-symbolic
+    variables:
+      container:
+        prompt: Container name
+        default: nginx
+    classifier:
+      title: logs @container
+    options:
+      command: docker logs -f @container
+      auto_execute: true
+
+  - name: Container shell
+    group: Docker
+    type: clippet
+    icon: utilities-terminal-symbolic
+    variables:
+      container:
+        prompt: Container name
+        default: nginx
+    options:
+      command: docker exec -it @container bash
+      auto_execute: true
+
+  # ------------------------------------------------------------------
+  # Bases — hidden base profiles for inheritance (not shown in sidebar)
+  # ------------------------------------------------------------------
+
+  # This profile is hidden; it only exists to be extended.
+  - name: staging-base
+    hidden: true
+    type: ssh
+    color: '#e5a50a'
+    options:
+      host: staging.example.com
+      user: deploy
+
+  # Children inherit host, user, and colour from staging-base.
+  - name: Staging — shell
+    group: Remote
+    extends: staging-base
+
+  - name: Staging — htop
+    group: Remote
+    extends: staging-base
+    type: clippet
+    options:
+      command: htop
+      auto_execute: true
