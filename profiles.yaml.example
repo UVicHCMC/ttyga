@@ -1,0 +1,144 @@
+# ttyga example profiles — one profile per feature worth knowing about.
+# Copy to ~/.config/ttyga/profiles.yaml and edit to suit.
+# After editing by hand, press Ctrl+Alt+R in ttyga to reload.
+
+groups:
+  - Commands
+  - Maintenance
+  - Remote
+  - Projects
+
+profiles:
+
+  # ------------------------------------------------------------------
+  # Commands — utility clippets, typically run in the current tab
+  # ------------------------------------------------------------------
+
+  # Paste a command for review before running (default behaviour).
+  - name: Disk usage
+    group: Commands
+    type: clippet
+    icon: drive-harddisk-symbolic
+    options:
+      command: df -h
+      auto_execute: false
+
+  # Run immediately in the current tab. Tab label shows the directory name.
+  - name: File permissions
+    group: Commands
+    type: clippet
+    icon: system-run-symbolic
+    options:
+      command: 'find . -maxdepth 1 -printf ''%m %M %u:%g %s %TY-%Tm-%Td %f\n'''
+      auto_execute: true
+      in_place: true
+    classifier:
+      title: perms @dir
+
+  # Serve the current directory over HTTPS. Label shows dir and port.
+  - name: Serve here
+    group: Commands
+    type: clippet
+    icon: folder-publicshare-symbolic
+    options:
+      command: python3 -m http.server 8080
+      auto_execute: true
+      in_place: true
+    classifier:
+      title: HTTP @dir :8080
+
+  # Multi-line command using YAML block scalar.
+  - name: Git status summary
+    group: Commands
+    type: clippet
+    icon: git-symbolic
+    options:
+      command: |
+        git fetch --all
+        git log --oneline --graph --decorate -20
+      auto_execute: true
+      in_place: true
+
+  # ------------------------------------------------------------------
+  # Maintenance — tasks that open a new tab and run immediately
+  # ------------------------------------------------------------------
+
+  # Auto-execute in a new tab. Custom classifier shows context.
+  - name: System update
+    group: Maintenance
+    type: clippet
+    icon: software-update-available-symbolic
+    options:
+      command: sudo apt update && sudo apt dist-upgrade
+      auto_execute: true
+    classifier:
+      title: APT @host
+
+  # Custom option key used as a classifier token.
+  - name: Deploy to production
+    group: Maintenance
+    type: clippet
+    icon: emblem-system-symbolic
+    options:
+      command: ./deploy.sh production
+      auto_execute: true
+      target: production
+    classifier:
+      title: deploy → @target
+
+  # ------------------------------------------------------------------
+  # Remote — SSH connections
+  # ------------------------------------------------------------------
+
+  # Basic SSH — tab label is user@host by default.
+  - name: Webserver
+    group: Remote
+    type: ssh
+    icon: network-server-symbolic
+    options:
+      host: web.example.com
+      user: deploy
+
+  # SSH with a custom tab label.
+  - name: Database
+    group: Remote
+    type: ssh
+    icon: network-server-symbolic
+    options:
+      host: db.example.com
+      user: admin
+    classifier:
+      title: DB — @host
+
+  # SSH using a project-specific username (e.g. shared NFS account).
+  - name: Project X on NFS
+    group: Remote
+    type: ssh
+    icon: folder-remote-symbolic
+    options:
+      host: nfs.example.com
+      user: projectx
+
+  # ------------------------------------------------------------------
+  # Projects — open a local project directory in a new tab
+  # ------------------------------------------------------------------
+
+  # cd into a project folder and open a shell there.
+  - name: My Project
+    group: Projects
+    type: clippet
+    icon: folder-symbolic
+    options:
+      command: cd /home/user/Projects/my-project
+      auto_execute: true
+
+  # Launch a tool inside a project directory.
+  - name: My Project — editor
+    group: Projects
+    type: clippet
+    icon: text-editor-symbolic
+    options:
+      command: cd /home/user/Projects/my-project && code .
+      auto_execute: true
+    classifier:
+      title: code my-project

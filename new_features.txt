@@ -1,0 +1,25 @@
+Adjustments/new features
+========================
+1) Add icon to tab so I know what the tab is for at a glance.
+2) Green dot for remote tabs is too subtle
+3) Grouping of profiles in profile editor sidebar.
+4) Subtle graphic at bottom of sidebar.
+5) Name change to Taiga. Explanation: taiga is just descriptive. Taken from ttyga, or tty Gnome Application
+6) Add easy way to make terminal text bigger. Ctrl+, ctrl+scroll...?
+7) Add pref that allows user to select the terminal theme from active gnome profiles (I have one called hcmc). Can we include a launcher for the gnome profile editor?
+8) Add advanced prefs that allow user to adjust all of the visuals in the script, like sidebar font size and the icons used by the app (that's an addition I think). Most of these are already variables in the script that a user can change by editing the script. This panel would just add settings that would overrule them.
+9) Scrolling speed in taiga seems very fast. Is this configurable?
+10) Open in Nautilus works for profiles that just cd somewhere, but not for 'cd /path/to/dir && claude' of ssh items.
+11) Change ctrl+w, ctrl+t, etc. back to standard ctrl+shift versions - too complicated to remember
+
+x) look at switching from yaml to toml or json for profiles - it will enable the removal of the 3rd party lib 'yaml'
+x) look at switching to Mosh+Eternal terminal
+x) Is GPU acceleration worth looking at?
+x) Do I care about compatibility with tmux or Neovim? How about 24-bit colour?
+x) Can we add a visual indicator on tabs when they have output or activity?
+x) Explore the idea of clustering tabs - launch new tab from an ssh tab. Do I get a new tab on the remote machine?
+x) Multiplexed panes?
+x) Remote machine-specific profiles? How to display? When clicked, open the new tab and display remote profiles in expanded list in sidebar?
+x) Can we add a fs browser (default file explorer or clever, clickable cli browser) that lets users browse local fs to open a tab? I imagine opening a sidebar to the right that displays a tree and the terminal pane cd's to that location at each click. This should work locally and remotely.
+x) drag-and-drop from local file explorer to current dir in pane - drop works in local and remote dirs.
+

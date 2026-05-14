@@ -1,0 +1,218 @@
+# ttyga Help
+
+ttyga is a terminal launcher for GNOME. Instead of hunting through your shell history or keeping a text file of useful commands, you keep **profiles** in a sidebar — click one and it opens a new terminal tab ready to go, whether that's an SSH session, a command to review, or a script that runs immediately.
+
+---
+
+## Your first tab
+
+When ttyga opens you will see the welcome screen. Click **Open new tab** (or press **Ctrl+T**) to open a plain bash terminal. From here it works like any terminal — type commands, press Enter, get output.
+
+To open more tabs use **Ctrl+T** or the **+** button next to the tab bar. Switch between tabs with **Ctrl+Tab** and **Ctrl+Shift+Tab**, or click the tab label. Close a tab with **Ctrl+W**; when the last tab closes you return to the welcome screen.
+
+---
+
+## The sidebar
+
+The sidebar holds your profiles, organised into groups. Show or hide it with **Ctrl+Shift+B** or the sidebar icon in the header bar. The sidebar is hidden by default — ttyga remembers whether you had it open when you last closed the app.
+
+At the top of the sidebar is a search box. Start typing to filter profiles by name; press **Escape** to clear the search and return focus to the terminal.
+
+Profile buttons show the profile icon on the left, the name in the middle, and a `$` tag on the right for clippet profiles. If a profile has a colour set, a coloured stripe runs down the left edge of its button.
+
+---
+
+## Profiles
+
+A profile is a saved action — either an SSH connection or a shell command. Clicking a profile in the sidebar opens a new terminal tab and either connects to the remote host or types the command into the new shell.
+
+### SSH profiles
+
+An SSH profile stores a hostname and optional username and port. Clicking it opens a new tab and runs `ssh user@host`. The tab label shows `user@host` automatically.
+
+### Clippet profiles
+
+A clippet profile stores a shell command. Clicking it opens a new tab with the command ready in the prompt. You can review it before pressing Enter, or set **Auto-execute** to have it run immediately.
+
+A clippet can also run in the **current tab** instead of opening a new one — useful for short utility commands. Enable **Run in current tab** in the profile editor.
+
+### Profile variables
+
+Any profile can define variables that are prompted for at launch time. When you click a profile that has variables defined, a small dialog appears asking for each value before the tab opens. Values are pre-filled with the default (or your last-used value) and you can change them before launching.
+
+Variables are defined by hand in `profiles.yaml` — see `TTYGA_TECH.md` for the full syntax.
+
+---
+
+## Creating profiles
+
+Open the profile editor with the pencil icon in the header bar.
+
+**To add a profile:**
+
+- Click **+** at the bottom of the profile list on the left.
+- Give it a name — this is what appears in the sidebar.
+- Choose a group from the dropdown, or click **+** beside it to add a new group.
+- Set the type: **ssh** or **clippet**.
+- Fill in the options for that type (see below).
+- Optionally set an icon with **Browse…**, or type an XDG icon name, a path to a PNG/SVG file, or a single Unicode character directly into the icon field.
+- Optionally set a **Colour** (hex value like `#e5a50a`) for a visual accent stripe in the sidebar and a matching tab dot.
+- Optionally override the **Theme** (Light, Dark, or Nord) and **Font** for that profile's terminal tab — leave blank to follow the global Preferences.
+- Click **Save** when done.
+
+**To edit a profile:** select it in the list and change any field. **Save** applies all pending changes; **Cancel** discards them.
+
+**To delete a profile:** select it and click **−**.
+
+**To edit a profile from a tab:** right-click the tab label.
+
+### SSH options
+
+- **Host** — Hostname, IP address, or an alias from `~/.ssh/config`. Click **From SSH config…** to pick an alias from your existing SSH config file.
+- **User** — Username to log in with (leave blank to use ssh config defaults).
+- **Port** — Port number (leave blank to use ssh config defaults).
+
+### Clippet options
+
+- **Command** — The shell command to type. Multi-line commands are fine.
+- **Auto-execute** — Run immediately without waiting for Enter.
+- **Run in current tab** — Paste into the active tab instead of opening a new one.
+
+### Launch settings (all profile types)
+
+- **Working dir** — Starting directory for the new terminal tab (e.g. `~/projects/foo`). Leave blank to use the default home directory.
+- **Environment** — Extra environment variables, one per line in `KEY=value` format. These are merged with the environment ttyga inherits.
+- **tmux** — Enable tmux integration for this profile. When on, the tab will run `tmux attach -t <session> || tmux new -s <session>` — attaching to an existing session or creating a new one. For SSH profiles this runs over the SSH connection, giving you a persistent, reconnectable remote session.
+
+---
+
+## Organising profiles
+
+Profiles belong to groups, which appear as headings in the sidebar. You can create groups from the profile editor. Groups can have their own icon, shown next to the group heading — click the pencil icon beside the group dropdown to set one.
+
+In **Expanders** layout (the default) groups collapse and expand; in **Flat** layout the headings are always visible. Switch layout in Preferences.
+
+The sidebar width is draggable — grab the thin handle at its right edge to resize it.
+
+---
+
+## Tab labels
+
+Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead.
+
+For a plain tab the label follows the terminal title reported by your shell (usually the current directory). For a profile tab the label is set by the profile:
+
+- SSH profiles show `user@host` by default.
+- Clippet profiles show the profile name by default.
+
+You can customise any profile's label with a **Classifier title** in the profile editor. Use `@` tokens to pull in dynamic values:
+
+| Token | Value |
+|---|---|
+| `@user` | Local or SSH username |
+| `@host` | Local machine name or SSH hostname |
+| `@dir` | Current directory basename |
+| `@cwd` | Full path of the current directory |
+
+Any key from the profile's `options` can also be used as a token.
+
+**Example:** classifier title `Lab — @host` on an SSH profile with host `cadfael.local` produces `Lab — cadfael.local`.
+
+---
+
+## Split panes
+
+Each tab can be split into multiple panes, each running its own shell.
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Shift+E | Split current pane right (side by side) |
+| Ctrl+Shift+D | Split current pane down (top / bottom) |
+| Ctrl+Shift+W | Close active pane (closes the tab if it is the last pane) |
+| Ctrl+Alt+← / → / ↑ / ↓ | Move focus to the previous or next pane |
+
+Panes can be resized by dragging the handle between them. The tab close button (×) always closes the whole tab regardless of how many panes it contains.
+
+New panes always open a plain bash shell. To run a profile in a pane, click the profile in the sidebar while that pane has focus.
+
+---
+
+## Terminal font zoom
+
+You can zoom the terminal font temporarily without changing Preferences:
+
+| Shortcut | Action |
+|---|---|
+| Ctrl++ or Ctrl+= | Zoom in |
+| Ctrl+− | Zoom out |
+| Ctrl+0 | Reset to profile or global default |
+| Ctrl+scroll | Zoom in / out |
+
+Zoom is ephemeral — it is not saved and resets to the base size when you use Ctrl+0. If a tab has a per-profile font, zoom shifts from that font's size rather than the global default.
+
+---
+
+## Opening files in another app
+
+The header bar has a split button that opens the current tab's working directory in another application. The primary action opens Nautilus (Files); the dropdown offers VS Code. The path is taken from the terminal's current directory if your shell reports it via OSC 7 (most modern shell prompts do), otherwise it falls back to the directory the tab was launched in.
+
+---
+
+## Preferences
+
+Open via the hamburger menu → **Preferences**.
+
+- **Colour scheme** — Light, Dark, or Nord (a blue-grey dark palette). Individual profiles can override this for their own tab.
+- **Terminal font** — Picked via the system font chooser; applies to all tabs that do not have a per-profile font set.
+- **Sidebar layout** — Expanders (collapsible groups) or Flat (static headings).
+- **Scrollback** — Lines of terminal history kept per tab.
+- **Scroll speed** — Lines scrolled per wheel tick (1–10).
+- **Copy on selection** — Selecting text copies it to the clipboard automatically.
+- **Restore tabs on launch** — Re-open the tabs from your last session on next start.
+
+---
+
+## Keyboard shortcuts
+
+### Application
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Q | Quit |
+| Ctrl+Alt+R | Reload profiles from disk |
+
+### Tabs
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+T | New tab |
+| Ctrl+W | Close current tab |
+| Ctrl+Tab | Next tab |
+| Ctrl+Shift+Tab | Previous tab |
+
+### Sidebar
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Shift+B | Show / hide sidebar |
+| Ctrl+F | Focus the profile search box |
+| Escape | Clear search, return focus to terminal |
+
+### Terminal
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Shift+C | Copy selection |
+| Ctrl+Shift+V | Paste |
+| Ctrl++ / Ctrl+= | Zoom font in |
+| Ctrl+− | Zoom font out |
+| Ctrl+0 | Reset font zoom |
+| Ctrl+scroll | Zoom font in / out |
+
+---
+
+## Editing profiles by hand
+
+All profiles are stored in `~/.config/ttyga/profiles.yaml`. You can edit this file directly in any text editor — it is plain YAML. After saving, press **Ctrl+Alt+R** in ttyga to reload without restarting.
+
+For full details of the YAML structure and every available field, see `TTYGA_TECH.md`.
