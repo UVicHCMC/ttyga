@@ -349,7 +349,20 @@ Open via hamburger menu → **Preferences**.
 | **Scrollback** | `scrollback` | Lines per tab (100 – 1 000 000) |
 | **Scroll speed** | `scroll_speed` | Lines per wheel tick (1–10, default 3) |
 | **Copy on selection** | `copy_on_selection` | `true` / `false` |
-| **Restore tabs on launch** | `restore_tabs` | `true` / `false` |
+| **Restore tabs on launch** | `restore_tabs` | `true` / `false`; saves pane layouts, cwds, and active tab index |
+
+**Session persistence detail (`app_state.json`):**
+
+`open_tabs` is now a list of `{"layout": <node>}` objects. Each `<node>` is either:
+
+- `{"type": "terminal", "profile": {"name": ..., "group": ...}, "cwd": "..."}` — a single pane; `profile` is `null` for plain shells
+- `{"type": "paned", "orientation": "horizontal"|"vertical", "position": <int>, "start": <node>, "end": <node>}` — a split
+
+`active_tab_index` records the focused tab (integer page index).
+
+On restore, SSH panes reconnect automatically (init-file), tmux panes reattach to their named session. Local panes reopen in their saved cwd.
+
+The legacy flat format (`{"name": ..., "group": ...}`) is still accepted for backward compatibility.
 
 Welcome screen appearance can be set directly in `settings.yaml`:
 

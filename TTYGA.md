@@ -168,7 +168,7 @@ Open via the hamburger menu → **Preferences**.
 - **Scrollback** — Lines of terminal history kept per tab.
 - **Scroll speed** — Lines scrolled per wheel tick (1–10).
 - **Copy on selection** — Selecting text copies it to the clipboard automatically.
-- **Restore tabs on launch** — Re-open the tabs from your last session on next start.
+- **Restore tabs on launch** — Re-open the tabs from your last session on next start. ttyga saves pane layouts, working directories, and the active tab so the session is reconstructed as closely as possible. SSH tabs reconnect automatically; tmux tabs reattach to their named session.
 
 ---
 

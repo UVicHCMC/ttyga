@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -1886,12 +1886,7 @@ class DevFrame(Adw.Application):
         open_tabs = []
         for i in range(self.notebook.get_n_pages()):
             tab_root = self.notebook.get_nth_page(i)
-            term = self._first_terminal_in(tab_root)
-            p = self.tabs.get(term, {}).get('profile') if term else None
-            if p:
-                open_tabs.append({'name': p.get('name'), 'group': p.get('group', 'General')})
-            else:
-                open_tabs.append(None)
+            open_tabs.append({'layout': self._serialise_tab(tab_root)})
 
         state = {
             "expanded_groups": {
@@ -1901,6 +1896,7 @@ class DevFrame(Adw.Application):
             "sidebar_visible": self.split_view.get_show_sidebar(),
             "window_maximized": maximized,
             "open_tabs": open_tabs,
+            "active_tab_index": self.notebook.get_current_page(),
             "variable_history": self._var_history,
         }
         if not maximized:
@@ -1913,6 +1909,40 @@ class DevFrame(Adw.Application):
         except Exception as e:
             logger.warning("Error saving state: %s", e)
         return False
+
+    def _serialise_pane(self, widget):
+        if isinstance(widget, Vte.Terminal):
+            meta = self.tabs.get(widget, {})
+            p = meta.get('profile')
+            cwd_uri = widget.get_current_directory_uri()
+            cwd = None
+            if cwd_uri:
+                try:
+                    cwd = GLib.filename_from_uri(cwd_uri)[0] or None
+                except Exception:
+                    pass
+            if cwd is None:
+                cwd = meta.get('spawn_dir')
+            return {
+                'type': 'terminal',
+                'profile': {'name': p.get('name'), 'group': p.get('group', 'General')} if p else None,
+                'cwd': cwd,
+            }
+        if isinstance(widget, Gtk.Paned):
+            orientation = ('horizontal' if widget.get_orientation() == Gtk.Orientation.HORIZONTAL
+                           else 'vertical')
+            return {
+                'type': 'paned',
+                'orientation': orientation,
+                'position': widget.get_position(),
+                'start': self._serialise_pane(widget.get_start_child()),
+                'end': self._serialise_pane(widget.get_end_child()),
+            }
+        return None
+
+    def _serialise_tab(self, tab_root):
+        child = tab_root.get_first_child()
+        return self._serialise_pane(child) if child else None
 
     # ----- theme -----------------------------------------------------------
 
@@ -1973,6 +2003,163 @@ class DevFrame(Adw.Application):
             cache_icon.write_bytes(src.read_bytes())
         Gtk.IconTheme.get_for_display(display).add_search_path(str(cache_root))
 
+    # ----- session restore helpers -----------------------------------------
+
+    def _find_primary_profile(self, node, by_key):
+        """Depth-first search for the first terminal's profile in a layout node."""
+        if node is None:
+            return None
+        if node.get('type') == 'terminal':
+            p_ref = node.get('profile')
+            if p_ref:
+                return by_key.get((p_ref.get('name'), p_ref.get('group', 'General')))
+            return None
+        if node.get('type') == 'paned':
+            p = self._find_primary_profile(node.get('start'), by_key)
+            return p or self._find_primary_profile(node.get('end'), by_key)
+        return None
+
+    def _build_pane_tree(self, node, tab_root, tab_label, dot, by_key):
+        """Recursively recreate pane widgets from a serialised layout node."""
+        if node is None:
+            terminal = self._new_terminal()
+            self.tabs[terminal] = {
+                'label': tab_label, 'dot': dot, 'kind': 'local',
+                'profile': None, 'tab_root': tab_root,
+                'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
+                'spawn_dir': os.environ.get('HOME', '/'),
+            }
+            return terminal
+
+        if node.get('type') == 'terminal':
+            p_ref = node.get('profile')
+            profile = by_key.get((p_ref['name'], p_ref.get('group', 'General'))) if p_ref else None
+            cwd = node.get('cwd')
+            p_env = profile.get('env', {}) if profile else {}
+
+            if profile:
+                p_type = profile.get('type', 'clippet')
+                opts = profile.get('options', {})
+                tmux_on = bool(profile.get('tmux', False))
+                tmux_session = (profile.get('tmux_session') or 'main').strip()
+                tmux_cmd = f"tmux attach -t {tmux_session} || tmux new -s {tmux_session}"
+
+                if p_type == 'ssh':
+                    user = opts.get('user', '').strip()
+                    host = opts.get('host', 'localhost').strip()
+                    port = str(opts.get('port', '')).strip()
+                    parts = ['ssh']
+                    if port:
+                        parts += ['-p', port]
+                    parts.append(f'{user}@{host}' if user else host)
+                    if tmux_on:
+                        parts += ['-t', f"'{tmux_cmd}'"]
+                    cmd = ' '.join(parts) + '\n'
+                    kind = 'ssh'
+                else:
+                    cmd = (tmux_cmd + '\n') if tmux_on else None
+                    kind = 'local'
+            else:
+                cmd = None
+                kind = 'local'
+
+            if cmd:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.sh', prefix='ttyga_', delete=False)
+                tmp.write('[ -f ~/.bashrc ] && . ~/.bashrc\n')
+                tmp.write(cmd.rstrip('\n') + '\n')
+                tmp.close()
+                def on_spawn(term, _tmp=tmp.name):
+                    try:
+                        os.unlink(_tmp)
+                    except OSError:
+                        pass
+                terminal = self._new_terminal(
+                    on_spawn=on_spawn,
+                    shell_args=['--init-file', tmp.name],
+                    cwd=cwd, env=p_env or None, profile=profile)
+            else:
+                terminal = self._new_terminal(cwd=cwd, env=p_env or None, profile=profile)
+
+            base_font = ((profile.get('terminal_font') if profile else None) or
+                         self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
+            self.tabs[terminal] = {
+                'label':     tab_label,
+                'dot':       dot,
+                'kind':      kind,
+                'profile':   profile,
+                'base_font': base_font,
+                'tab_root':  tab_root,
+                'spawn_dir': cwd or os.environ.get('HOME', '/'),
+            }
+            return terminal
+
+        if node.get('type') == 'paned':
+            orientation = (Gtk.Orientation.HORIZONTAL if node.get('orientation') == 'horizontal'
+                           else Gtk.Orientation.VERTICAL)
+            paned = Gtk.Paned(orientation=orientation)
+            paned.set_hexpand(True)
+            paned.set_vexpand(True)
+            start = self._build_pane_tree(node.get('start'), tab_root, tab_label, dot, by_key)
+            end   = self._build_pane_tree(node.get('end'),   tab_root, tab_label, dot, by_key)
+            paned.set_start_child(start)
+            paned.set_end_child(end)
+            pos = node.get('position', 0)
+            if pos:
+                GLib.idle_add(lambda p=paned, v=pos: p.set_position(v) or False)
+            return paned
+
+        # Unknown node type — fall back to plain shell
+        terminal = self._new_terminal()
+        self.tabs[terminal] = {
+            'label': tab_label, 'dot': dot, 'kind': 'local',
+            'profile': None, 'tab_root': tab_root,
+            'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
+            'spawn_dir': os.environ.get('HOME', '/'),
+        }
+        return terminal
+
+    def _restore_tab(self, layout, by_key, focus=False):
+        """Reconstruct a tab from a serialised layout dict."""
+        profile = self._find_primary_profile(layout, by_key)
+        kind = 'ssh' if (profile and profile.get('type') == 'ssh') else 'local'
+        title = (self._build_classifier_title(profile)
+                 if profile else f"{_LOCAL_USER}@{_LOCAL_HOST}")
+        tab_icon = profile.get('icon', '') if profile else None
+
+        tab_box, tab_label, close_btn, dot = self._make_tab_label(title, kind=kind, icon=tab_icon)
+
+        if profile:
+            color = profile.get('color', '')
+            if color:
+                dot_prov = Gtk.CssProvider()
+                dot_prov.load_from_string(f"image {{ color: {color}; }}")
+                dot.get_style_context().add_provider(
+                    dot_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+
+        tab_root = Gtk.Box()
+        tab_root.set_hexpand(True)
+        tab_root.set_vexpand(True)
+
+        content = self._build_pane_tree(layout, tab_root, tab_label, dot, by_key)
+        tab_root.append(content)
+
+        primary_term = self._first_terminal_in(tab_root)
+        if primary_term:
+            close_btn.connect("clicked", self._on_close_tab, primary_term)
+        if profile:
+            rc = Gtk.GestureClick(button=3)
+            rc.connect('pressed', lambda g, _n, _x, _y, _p=profile: self._edit_profile(_p))
+            tab_box.add_controller(rc)
+
+        self._show_notebook()
+        idx = self.notebook.append_page(tab_root, tab_box)
+        self.notebook.set_tab_reorderable(tab_root, True)
+        if focus:
+            self.notebook.set_current_page(idx)
+            if primary_term:
+                GLib.idle_add(lambda: primary_term.grab_focus() and False)
+
     def do_activate(self):
         if self.window:
             self.window.present()
@@ -1986,6 +2173,7 @@ class DevFrame(Adw.Application):
         self._apply_theme()
 
         open_tabs = state.get('open_tabs', []) if self.settings.get('restore_tabs', True) else []
+        active_tab_index = state.get('active_tab_index', -1)
         if open_tabs:
             config = self.load_config()
             by_key = {(p.get('name'), p.get('group', 'General')): p
@@ -1993,9 +2181,14 @@ class DevFrame(Adw.Application):
             for entry in open_tabs:
                 if entry is None:
                     self.add_tab(focus=False)
+                elif 'layout' in entry:
+                    self._restore_tab(entry['layout'], by_key, focus=False)
                 else:
-                    key = (entry['name'], entry.get('group', 'General'))
+                    # Legacy format: {name, group}
+                    key = (entry.get('name', ''), entry.get('group', 'General'))
                     self.add_tab(profile=by_key.get(key), focus=False)
+            if 0 <= active_tab_index < self.notebook.get_n_pages():
+                self.notebook.set_current_page(active_tab_index)
             term = self._get_active_terminal()
             if term:
                 GLib.idle_add(lambda: term.grab_focus() and False)
