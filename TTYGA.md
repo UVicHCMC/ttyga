@@ -137,7 +137,7 @@ Any key from the profile's `options` can also be used as a token.
 
 ## Split panes
 
-Each tab can be split into multiple panes, each running its own shell.
+Each tab can be split into multiple panes, each running its own shell. The two split buttons in the tab bar (next to the **+** button) split the focused pane side-by-side or top/bottom with a single click.
 
 | Shortcut | Action |
 |---|---|

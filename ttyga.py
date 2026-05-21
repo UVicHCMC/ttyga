@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2113,17 +2113,26 @@ class DevFrame(Adw.Application):
     # ----- lifecycle -------------------------------------------------------
 
     def _register_app_icon(self):
-        """Stage the bundled SVG into a hicolor theme structure under ~/.cache
-        so the ca.greg.ttyga icon name resolves when running from source."""
+        """Stage all bundled SVGs from the icon theme into ~/.cache so custom
+        icon names (app icon + action icons) resolve when running from source."""
         display = Gdk.Display.get_default()
         if display is None:
             return
         cache_root = Path(GLib.get_user_cache_dir()) / 'ttyga'
-        cache_icon = cache_root / 'hicolor' / 'scalable' / 'apps' / 'ca.greg.ttyga.svg'
-        src = Path(__file__).parent / 'ttyga-icon-theme' / 'hicolor' / 'scalable' / 'apps' / 'ttyga.svg'
-        if src.exists() and not cache_icon.exists():
-            cache_icon.parent.mkdir(parents=True, exist_ok=True)
-            cache_icon.write_bytes(src.read_bytes())
+        src_root   = Path(__file__).parent / 'ttyga-icon-theme'
+        # App icon is published under the reverse-DNS name GTK expects.
+        app_src = src_root / 'hicolor' / 'scalable' / 'apps' / 'ttyga.svg'
+        app_dst = cache_root / 'hicolor' / 'scalable' / 'apps' / 'ca.greg.ttyga.svg'
+        if app_src.exists():
+            app_dst.parent.mkdir(parents=True, exist_ok=True)
+            app_dst.write_bytes(app_src.read_bytes())
+        # All other SVGs (actions, etc.) are copied verbatim.
+        for src in src_root.rglob('*.svg'):
+            if src == app_src:
+                continue
+            dst = cache_root / src.relative_to(src_root)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
         Gtk.IconTheme.get_for_display(display).add_search_path(str(cache_root))
 
     # ----- session restore helpers -----------------------------------------
@@ -2423,11 +2432,27 @@ class DevFrame(Adw.Application):
         self.notebook.set_vexpand(True)
         self.notebook.connect('switch-page', self._on_tab_switched)
 
+        tab_actions = Gtk.Box(spacing=2)
+
+        split_h_btn = Gtk.Button(icon_name='ttyga-split-horiz-symbolic')
+        split_h_btn.add_css_class('flat')
+        split_h_btn.set_tooltip_text("Split pane side by side (Ctrl+Shift+E)")
+        split_h_btn.connect("clicked", lambda _: self._split_pane(Gtk.Orientation.HORIZONTAL))
+        tab_actions.append(split_h_btn)
+
+        split_v_btn = Gtk.Button(icon_name='ttyga-split-vert-symbolic')
+        split_v_btn.add_css_class('flat')
+        split_v_btn.set_tooltip_text("Split pane top/bottom (Ctrl+Shift+D)")
+        split_v_btn.connect("clicked", lambda _: self._split_pane(Gtk.Orientation.VERTICAL))
+        tab_actions.append(split_v_btn)
+
         new_tab_btn = Gtk.Button(icon_name='list-add-symbolic')
         new_tab_btn.add_css_class('flat')
         new_tab_btn.set_tooltip_text("New tab (Ctrl+Shift+T)")
         new_tab_btn.connect("clicked", lambda _: self.add_tab())
-        self.notebook.set_action_widget(new_tab_btn, Gtk.PackType.END)
+        tab_actions.append(new_tab_btn)
+
+        self.notebook.set_action_widget(tab_actions, Gtk.PackType.END)
 
         # Stack switches between the welcome screen and the notebook.
         self.content_stack = Gtk.Stack()

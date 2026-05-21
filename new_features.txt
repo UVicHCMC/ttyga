@@ -13,7 +13,8 @@ Adjustments/new features
 11) Change ctrl+w, ctrl+t, etc. back to standard ctrl+shift versions - too complicated to remember
 
 12) Add search to help
-13) is split panes working? How do I make it work?
+13) ✅ Buttons for splitting screens horiz. and vert. in tab bar next to + button (0.5.3)
+    (context mirroring on split — SSH re-connect / local cd — still open)
 
 
 Bugs
