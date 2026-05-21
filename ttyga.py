@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -3080,8 +3080,53 @@ class DevFrame(Adw.Application):
         meta     = self.tabs[terminal]
         tab_root = meta['tab_root']
         profile  = meta.get('profile')
+        kind     = meta.get('kind', 'local')
 
-        new_term = self._new_terminal(profile=profile)
+        if kind == 'ssh' and profile and profile.get('type') == 'ssh':
+            # Re-connect to the same host in the new pane.
+            opts         = profile.get('options', {})
+            tmux_on      = bool(profile.get('tmux', False))
+            tmux_session = (profile.get('tmux_session') or 'main').strip()
+            tmux_cmd     = f"tmux attach -t {tmux_session} || tmux new -s {tmux_session}"
+            user = opts.get('user', '').strip()
+            host = opts.get('host', 'localhost').strip()
+            port = str(opts.get('port', '')).strip()
+            parts = ['ssh']
+            if port:
+                parts += ['-p', port]
+            parts.append(f'{user}@{host}' if user else host)
+            if tmux_on:
+                parts += ['-t', f"'{tmux_cmd}'"]
+            cmd = ' '.join(parts)
+            tmp = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.sh', prefix='ttyga_', delete=False)
+            tmp.write('[ -f ~/.bashrc ] && . ~/.bashrc\n')
+            tmp.write(cmd + '\n')
+            tmp.close()
+            def on_spawn(term):
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+            new_term = self._new_terminal(
+                on_spawn=on_spawn,
+                shell_args=['--init-file', tmp.name],
+                profile=profile)
+            new_spawn_dir = meta.get('spawn_dir', '')
+        else:
+            # Local: inherit the current working directory via OSC 7.
+            cwd_uri = terminal.get_current_directory_uri()
+            cwd = None
+            if cwd_uri:
+                try:
+                    cwd = GLib.filename_from_uri(cwd_uri)[0] or None
+                except Exception:
+                    pass
+            if not cwd:
+                cwd = meta.get('spawn_dir') or os.environ.get('HOME')
+            new_term = self._new_terminal(profile=profile, cwd=cwd)
+            new_spawn_dir = cwd or meta.get('spawn_dir', '')
+
         paned = Gtk.Paned(orientation=orientation)
         paned.set_hexpand(True)
         paned.set_vexpand(True)
@@ -3110,7 +3155,7 @@ class DevFrame(Adw.Application):
             'profile':   profile,
             'base_font': base_font,
             'tab_root':  tab_root,
-            'spawn_dir': meta.get('spawn_dir', ''),
+            'spawn_dir': new_spawn_dir,
         }
         self._active_terminal = new_term
         GLib.idle_add(lambda: new_term.grab_focus() and False)

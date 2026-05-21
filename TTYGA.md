@@ -148,7 +148,7 @@ Each tab can be split into multiple panes, each running its own shell. The two s
 
 Panes can be resized by dragging the handle between them. The tab close button (×) always closes the whole tab regardless of how many panes it contains.
 
-New panes always open a plain bash shell. To run a profile in a pane, click the profile in the sidebar while that pane has focus.
+New panes inherit context from the pane that was split: SSH panes reconnect to the same host; local panes open bash in the same working directory (read from OSC 7 if your shell reports it, otherwise the tab's launch directory). To run a different profile in a pane, click the profile in the sidebar while that pane has focus.
 
 ---
 

@@ -14,7 +14,7 @@ Adjustments/new features
 
 12) Add search to help
 13) ✅ Buttons for splitting screens horiz. and vert. in tab bar next to + button (0.5.3)
-    (context mirroring on split — SSH re-connect / local cd — still open)
+    ✅ Split pane inherits context: SSH re-connects to same host; local opens in current dir (0.5.4)
 
 
 Bugs
