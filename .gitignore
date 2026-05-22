@@ -5,3 +5,4 @@ app_state.json
 profiles.yaml
 settings.yaml
 *.zip
+.claude/
