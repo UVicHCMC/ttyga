@@ -80,7 +80,7 @@ Profile buttons show the profile icon, the name, and (for clippets) a `$` tag. I
 
 ### Tabs
 
-Each tab runs its own bash shell. A small coloured dot in each tab label is **green** for SSH sessions and dim for local shells. If the profile has a `color` field, the dot uses that colour instead.
+Each tab runs its own bash shell. A small coloured dot in each tab label is **green** for SSH sessions and dim for local shells. If the profile has a `color` field, the dot uses that colour instead. When a profile has an `icon` set, the dot is hidden and the icon itself is tinted green (SSH) or dim (local) instead. The SSH green colour can be overridden globally via the `ssh_color` setting in `settings.yaml` (e.g. `ssh_color: '#ff9900'`); leave it empty to use the theme default.
 
 Right-clicking a tab label opens the profile editor for that profile.
 
@@ -361,7 +361,7 @@ The right panel form fields:
 | **Group** | Dropdown of existing groups; **+** adds a new group; pencil sets the group icon |
 | **Type** | `ssh` or `clippet`; switches which fields appear below |
 | **Icon** | XDG icon name, file path, or Unicode character; **Browse…** opens a searchable picker |
-| **Colour** | Hex colour for the sidebar stripe and tab dot; shows a live swatch |
+| **Colour** | Hex colour for the sidebar stripe and tab dot; type a value or use the colour picker button |
 | **Theme** | Default / Light / Dark / Nord — per-profile terminal colour scheme |
 | **Font** | Pango font description; **Choose…** opens the system font picker; leave blank to inherit global |
 | **Host / User / Port** | SSH fields; **From SSH config…** populates from `~/.ssh/config` |
@@ -386,6 +386,7 @@ Open via hamburger menu → **Preferences**.
 | **Scroll speed** | `scroll_speed` | Lines per wheel tick (1–10, default 3) |
 | **Copy on selection** | `copy_on_selection` | `true` / `false` |
 | **Restore tabs on launch** | `restore_tabs` | `true` / `false`; saves pane layouts, cwds, and active tab index |
+| **SSH indicator colour** | `ssh_color` | Hex colour for the SSH tab dot / icon tint (e.g. `#ff9900`); empty = theme default |
 
 **Session persistence detail (`app_state.json`):**
 

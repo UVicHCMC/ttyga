@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.5.7"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -67,6 +67,7 @@ DEFAULT_SETTINGS = {
     'restore_tabs':      True,
     'welcome_image':     '',          # path to PNG/SVG; empty = app icon
     'welcome_blurb':     'Your terminals, organised.',
+    'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
 }
 
 # ---------------------------------------------------------------------------
@@ -388,7 +389,7 @@ def _rgba(hex_or_rgba):
 # defaults and swap its content when the user changes themes.
 # ---------------------------------------------------------------------------
 
-def build_css(theme):
+def build_css(theme, ssh_color=''):
     t = THEMES[theme]
     is_dark = theme in DARK_LIKE
     return f"""
@@ -455,7 +456,10 @@ notebook tab {{
 notebook tab:checked {{
     background: {t['bg']};
 }}
-.tab-dot-ssh   {{ color: {'#2ec27e' if theme == 'light' else '#57e389' if theme == 'dark' else '#a3d977'}; }}
+notebook > header.top > tabs {{
+    margin-bottom: 0;
+}}
+.tab-dot-ssh   {{ color: {ssh_color or ('#2ec27e' if theme == 'light' else '#57e389' if theme == 'dark' else '#a3d977')}; }}
 .tab-dot-local {{ color: {t['fg_dim']}; }}
 
 /* Editor list ------------------------------------------------------------- */
@@ -518,6 +522,24 @@ paned > separator {{
 }}
 paned > separator:hover {{
     background: {t['accent']};
+}}
+
+.pane-bar {{
+    background: {t['bg_headerbar']};
+    border-bottom: 1px solid {t['border']};
+    min-height: 22px;
+    padding: 0 4px;
+}}
+.pane-bar label {{
+    font-size: 9pt;
+    color: {t['fg_dim']};
+    padding-left: 4px;
+}}
+.pane-bar button {{
+    padding: 1px;
+    min-height: 18px;
+    min-width: 18px;
+    border-radius: 4px;
 }}
 
 /* Welcome screen ---------------------------------------------------------- */
@@ -860,15 +882,16 @@ class EditorWindow(Adw.Window):
         self.color_entry = Gtk.Entry()
         self.color_entry.set_placeholder_text("#rrggbb  (optional)")
         self.color_entry.set_hexpand(True)
-        self._color_swatch = Gtk.Box()
-        self._color_swatch.set_size_request(22, 22)
-        self._color_swatch.set_valign(Gtk.Align.CENTER)
-        self._color_provider = Gtk.CssProvider()
-        self._color_swatch.get_style_context().add_provider(
-            self._color_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        self._color_dialog = Gtk.ColorDialog()
+        self._color_dialog.set_with_alpha(False)
+        self._color_btn = Gtk.ColorDialogButton(dialog=self._color_dialog)
+        self._color_btn.set_valign(Gtk.Align.CENTER)
+        self._color_btn.set_tooltip_text("Pick a colour")
+        self._color_syncing = False
         self.color_entry.connect('changed', self._on_color_entry_changed)
+        self._color_btn.connect('notify::rgba', self._on_color_btn_changed)
         color_box.append(self.color_entry)
-        color_box.append(self._color_swatch)
+        color_box.append(self._color_btn)
 
         theme_model = Gtk.StringList.new(["Default", "Light", "Dark", "Nord"])
         self.theme_drop = Gtk.DropDown(model=theme_model)
@@ -1308,7 +1331,11 @@ class EditorWindow(Adw.Window):
         env_text = '\n'.join(f'{k}={v}' for k, v in env_dict.items())
         self.env_view.get_buffer().set_text(env_text)
 
-        self.color_entry.set_text(p.get('color', ''))
+        color = p.get('color', '')
+        self.color_entry.set_text(color)
+        rgba = Gdk.RGBA()
+        if color and rgba.parse(color):
+            self._color_btn.set_rgba(rgba)
 
         scheme = p.get('color_scheme', '')
         self.theme_drop.set_selected(
@@ -1427,13 +1454,24 @@ class EditorWindow(Adw.Window):
         self.tmux_session_entry.set_sensitive(switch.get_active())
 
     def _on_color_entry_changed(self, entry):
+        if self._color_syncing:
+            return
         color = entry.get_text().strip()
         rgba = Gdk.RGBA()
         if color and rgba.parse(color):
-            self._color_provider.load_from_string(
-                f"box {{ background: {color}; border-radius: 4px; }}")
-        else:
-            self._color_provider.load_from_string("box {}")
+            self._color_syncing = True
+            self._color_btn.set_rgba(rgba)
+            self._color_syncing = False
+
+    def _on_color_btn_changed(self, btn, _param):
+        if self._color_syncing:
+            return
+        rgba = btn.get_rgba()
+        hex_color = '#{:02x}{:02x}{:02x}'.format(
+            int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255))
+        self._color_syncing = True
+        self.color_entry.set_text(hex_color)
+        self._color_syncing = False
 
     def _on_profile_font_browse(self, btn):
         dialog = Gtk.FontDialog()
@@ -2042,6 +2080,8 @@ class DevFrame(Adw.Application):
         return False
 
     def _serialise_pane(self, widget):
+        if isinstance(widget, Gtk.Box) and 'pane-box' in widget.get_css_classes():
+            widget = self._first_terminal_in(widget)
         if isinstance(widget, Vte.Terminal):
             meta = self.tabs.get(widget, {})
             p = meta.get('profile')
@@ -2096,7 +2136,8 @@ class DevFrame(Adw.Application):
                     display, self.css_provider,
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        self.css_provider.load_from_data(build_css(theme).encode('utf-8'))
+        self.css_provider.load_from_data(
+            build_css(theme, self.settings.get('ssh_color', '')).encode('utf-8'))
 
         # Theme class on the window mirrors what the HTML mock did with
         # .theme-light/.theme-dark/.theme-nord on its root. Useful as a hook
@@ -2169,7 +2210,7 @@ class DevFrame(Adw.Application):
                 'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
                 'spawn_dir': os.environ.get('HOME', '/'),
             }
-            return terminal
+            return self._make_pane_box(terminal, self.tabs[terminal])
 
         if node.get('type') == 'terminal':
             p_ref = node.get('profile')
@@ -2232,7 +2273,7 @@ class DevFrame(Adw.Application):
                 'tab_root':  tab_root,
                 'spawn_dir': cwd or os.environ.get('HOME', '/'),
             }
-            return terminal
+            return self._make_pane_box(terminal, self.tabs[terminal])
 
         if node.get('type') == 'paned':
             orientation = (Gtk.Orientation.HORIZONTAL if node.get('orientation') == 'horizontal'
@@ -2257,7 +2298,7 @@ class DevFrame(Adw.Application):
             'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
             'spawn_dir': os.environ.get('HOME', '/'),
         }
-        return terminal
+        return self._make_pane_box(terminal, self.tabs[terminal])
 
     def _restore_tab(self, layout, by_key, focus=False):
         """Reconstruct a tab from a serialised layout dict."""
@@ -2292,6 +2333,7 @@ class DevFrame(Adw.Application):
             rc.connect('pressed', lambda g, _n, _x, _y, _p=profile: self._edit_profile(_p))
             tab_box.add_controller(rc)
 
+        self._update_pane_bars(tab_root)
         self._show_notebook()
         idx = self.notebook.append_page(tab_root, tab_box)
         self.notebook.set_tab_reorderable(tab_root, True)
@@ -2597,12 +2639,20 @@ class DevFrame(Adw.Application):
         uri = terminal.get_current_directory_uri() if terminal else None
         if uri:
             try:
-                path = GLib.filename_from_uri(uri)[0]
-                if path:
+                path, hostname = GLib.filename_from_uri(uri)
+                if path and not hostname:
                     return path
             except Exception:
                 pass
         meta = self.tabs.get(terminal, {})
+        profile = meta.get('profile')
+        if profile:
+            cmd = profile.get('options', {}).get('command', '')
+            m = re.match(r'cd\s+([^\s&;|]+)', cmd.strip())
+            if m:
+                path = str(Path(m.group(1)).expanduser())
+                if os.path.isdir(path):
+                    return path
         return meta.get('spawn_dir', os.environ.get('HOME', '/'))
 
     def _on_open_vscode(self, *args):
@@ -2888,18 +2938,24 @@ class DevFrame(Adw.Application):
                 meta['label'].set_label(title)
 
     def _make_tab_label(self, title, kind='local', icon=None):
-        """A tab: status dot · [profile icon] · title · close."""
+        """A tab: status dot · [profile icon] · title · close.
+
+        When a profile icon is set the dot is hidden and the icon itself is
+        coloured green (SSH) or dim (local) via the tab-dot-{kind} CSS class.
+        """
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
         dot = Gtk.Image.new_from_icon_name('media-record-symbolic')
         dot.set_pixel_size(10)
         dot.add_css_class(f'tab-dot-{kind}')
+        dot.set_visible(not icon)
         box.append(dot)
 
         if icon:
             if _is_gtk_icon(icon):
                 icon_widget = Gtk.Image.new_from_icon_name(icon)
                 icon_widget.set_pixel_size(14)
+                icon_widget.add_css_class(f'tab-dot-{kind}')
                 box.append(icon_widget)
             elif Path(icon).expanduser().is_file():
                 icon_widget = Gtk.Image.new_from_file(str(Path(icon).expanduser()))
@@ -2912,6 +2968,7 @@ class DevFrame(Adw.Application):
                 icon_widget.set_size_request(14, 14)
                 icon_widget.set_xalign(0.5)
                 icon_widget.set_yalign(0.5)
+                icon_widget.add_css_class(f'tab-dot-{kind}')
                 box.append(icon_widget)
 
         label = Gtk.Label(label=title)
@@ -2923,6 +2980,66 @@ class DevFrame(Adw.Application):
         box.append(close_btn)
 
         return box, label, close_btn, dot
+
+    def _make_pane_box(self, terminal, meta):
+        """Wrap a terminal in a thin header bar (profile label + close button)."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.add_css_class('pane-box')
+        box.set_hexpand(True)
+        box.set_vexpand(True)
+
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        bar.add_css_class('pane-bar')
+        bar.set_hexpand(True)
+
+        profile = meta.get('profile')
+        kind    = meta.get('kind', 'local')
+        if profile:
+            if kind == 'ssh':
+                opts = profile.get('options', {})
+                user = opts.get('user', '').strip()
+                host = opts.get('host', '').strip()
+                lbl_text = f"{user}@{host}" if user else host
+            else:
+                lbl_text = profile.get('name', '')
+        else:
+            lbl_text = ''
+
+        lbl = Gtk.Label(label=lbl_text)
+        lbl.set_hexpand(True)
+        lbl.set_xalign(0)
+        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        bar.append(lbl)
+
+        close_btn = Gtk.Button(icon_name='window-close-symbolic')
+        close_btn.add_css_class('flat')
+        close_btn.set_focusable(False)
+        close_btn.connect('clicked', self._on_pane_close_clicked, terminal)
+        bar.append(close_btn)
+        meta['pane_bar'] = bar
+
+        box.append(bar)
+        box.append(terminal)
+        return box
+
+    def _update_pane_bars(self, tab_root):
+        terminals = list(self._all_terminals_in(tab_root))
+        show = len(terminals) > 1
+        for t in terminals:
+            bar = self.tabs.get(t, {}).get('pane_bar')
+            if bar:
+                bar.set_visible(show)
+
+    def _on_pane_close_clicked(self, btn, terminal):
+        meta = self.tabs.get(terminal)
+        if meta is None:
+            return
+        tab_root = meta['tab_root']
+        in_tab = [t for t, m in self.tabs.items() if m.get('tab_root') is tab_root]
+        if len(in_tab) <= 1:
+            self._on_close_tab(None, terminal)
+        else:
+            self._close_pane(terminal)
 
     def add_tab(self, *args, profile=None, focus=True, cwd=None, resolved_vars=None):
         self.tab_count += 1
@@ -3012,7 +3129,6 @@ class DevFrame(Adw.Application):
         tab_root = Gtk.Box()
         tab_root.set_hexpand(True)
         tab_root.set_vexpand(True)
-        tab_root.append(terminal)
 
         self.tabs[terminal] = {
             'label':     tab_label,
@@ -3023,6 +3139,8 @@ class DevFrame(Adw.Application):
             'tab_root':  tab_root,
             'spawn_dir': str(Path(p_cwd).expanduser()) if p_cwd else os.environ.get('HOME', '/'),
         }
+        tab_root.append(self._make_pane_box(terminal, self.tabs[terminal]))
+        self._update_pane_bars(tab_root)
         self._show_notebook()
         idx = self.notebook.append_page(tab_root, tab_box)
         self.notebook.set_tab_reorderable(tab_root, True)
@@ -3147,22 +3265,6 @@ class DevFrame(Adw.Application):
         paned.set_hexpand(True)
         paned.set_vexpand(True)
 
-        parent = terminal.get_parent()
-        if isinstance(parent, Gtk.Box):
-            terminal.unparent()
-            paned.set_start_child(terminal)
-            paned.set_end_child(new_term)
-            parent.append(paned)
-        elif isinstance(parent, Gtk.Paned):
-            is_start = parent.get_start_child() is terminal
-            terminal.unparent()
-            paned.set_start_child(terminal)
-            paned.set_end_child(new_term)
-            if is_start:
-                parent.set_start_child(paned)
-            else:
-                parent.set_end_child(paned)
-
         base_font = meta['base_font']
         self.tabs[new_term] = {
             'label':     meta['label'],
@@ -3173,26 +3275,47 @@ class DevFrame(Adw.Application):
             'tab_root':  tab_root,
             'spawn_dir': new_spawn_dir,
         }
+        wrapper     = terminal.get_parent()   # pane-box
+        parent      = wrapper.get_parent()    # tab_root Box or Gtk.Paned
+        new_wrapper = self._make_pane_box(new_term, self.tabs[new_term])
+        if isinstance(parent, Gtk.Box):
+            wrapper.unparent()
+            paned.set_start_child(wrapper)
+            paned.set_end_child(new_wrapper)
+            parent.append(paned)
+        elif isinstance(parent, Gtk.Paned):
+            is_start = parent.get_start_child() is wrapper
+            wrapper.unparent()
+            paned.set_start_child(wrapper)
+            paned.set_end_child(new_wrapper)
+            if is_start:
+                parent.set_start_child(paned)
+            else:
+                parent.set_end_child(paned)
         self._active_terminal = new_term
+        GLib.idle_add(lambda: self._update_pane_bars(tab_root) or False)
         GLib.idle_add(lambda: new_term.grab_focus() and False)
 
     def _close_pane(self, terminal):
         """Remove one pane. The tab survives; caller ensures it isn't the last pane."""
-        parent = terminal.get_parent()
+        wrapper     = terminal.get_parent()   # pane-box
+        parent      = wrapper.get_parent()    # Gtk.Paned
         if not isinstance(parent, Gtk.Paned):
             return
 
-        if parent.get_start_child() is terminal:
-            sibling = parent.get_end_child()
-        else:
-            sibling = parent.get_start_child()
-
+        is_start    = parent.get_start_child() is wrapper
+        sibling     = parent.get_end_child() if is_start else parent.get_start_child()
         grandparent = parent.get_parent()
         is_start_in_gp = (isinstance(grandparent, Gtk.Paned) and
                           grandparent.get_start_child() is parent)
 
-        sibling.unparent()
-        terminal.unparent()
+        # Use set_*_child(None) — the idiomatic GTK4 way to detach Paned children.
+        if is_start:
+            parent.set_start_child(None)
+            parent.set_end_child(None)
+        else:
+            parent.set_end_child(None)
+            parent.set_start_child(None)
 
         if isinstance(grandparent, Gtk.Box):
             parent.unparent()
@@ -3206,7 +3329,10 @@ class DevFrame(Adw.Application):
         self.tabs.pop(terminal, None)
         self._active_terminal = self._first_terminal_in(sibling)
         if self._active_terminal:
-            GLib.idle_add(lambda: self._active_terminal.grab_focus() and False)
+            _at  = self._active_terminal
+            _tr  = self.tabs[_at]['tab_root']
+            GLib.idle_add(lambda: self._update_pane_bars(_tr) or False)
+            GLib.idle_add(lambda: _at.grab_focus() and False)
 
     def _close_active_pane(self):
         terminal = self._get_active_terminal()

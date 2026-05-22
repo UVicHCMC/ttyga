@@ -71,7 +71,7 @@ Open the profile editor with the pencil icon in the header bar.
 - Set the type: **ssh** or **clippet**.
 - Fill in the options for that type (see below).
 - Optionally set an icon with **Browse…**, or type an XDG icon name, a path to a PNG/SVG file, or a single Unicode character directly into the icon field.
-- Optionally set a **Colour** (hex value like `#e5a50a`) for a visual accent stripe in the sidebar and a matching tab dot.
+- Optionally set a **Colour** using the colour picker button or by typing a hex value (e.g. `#e5a50a`) for a visual accent stripe in the sidebar and a matching tab dot.
 - Optionally override the **Theme** (Light, Dark, or Nord) and **Font** for that profile's terminal tab — leave blank to follow the global Preferences.
 - Click **Save** when done.
 
@@ -113,7 +113,7 @@ The sidebar width is draggable — grab the thin handle at its right edge to res
 
 ## Tab labels
 
-Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead.
+Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead. If the profile has an icon, the dot is hidden and the icon itself is tinted green or dim instead.
 
 For a plain tab the label follows the terminal title reported by your shell (usually the current directory). For a profile tab the label is set by the profile:
 
