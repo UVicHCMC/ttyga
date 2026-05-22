@@ -1701,16 +1701,21 @@ class HelpWindow(Adw.Window):
 
     def __init__(self, parent):
         super().__init__(title="ttyga Help", transient_for=parent, modal=False)
-        self.set_default_size(720, 640)
+        self.set_default_size(900, 640)
         self._search_iters = []
         self._search_pos = 0
 
         toolbar = Adw.ToolbarView()
         self.set_content(toolbar)
-        toolbar.add_top_bar(Adw.HeaderBar())
+
+        header = Adw.HeaderBar()
+        search_btn = Gtk.ToggleButton(icon_name='system-search-symbolic')
+        search_btn.set_tooltip_text("Search (Ctrl+F)")
+        header.pack_end(search_btn)
+        toolbar.add_top_bar(header)
 
         self._search_bar = Gtk.SearchBar()
-        self._search_bar.set_show_close_button(True)
+        self._search_bar.set_show_close_button(False)
         self._search_bar.set_key_capture_widget(self)
         self._search_entry = Gtk.SearchEntry()
         self._search_entry.set_size_request(300, -1)
@@ -1720,6 +1725,9 @@ class HelpWindow(Adw.Window):
         self._search_entry.connect('stop-search', self._on_search_stop)
         self._search_bar.set_child(self._search_entry)
         self._search_bar.connect_entry(self._search_entry)
+        self._search_bar.bind_property('search-mode-enabled', search_btn, 'active',
+                                       GObject.BindingFlags.BIDIRECTIONAL)
+        search_btn.connect('toggled', lambda btn: self._search_entry.grab_focus() if btn.get_active() else None)
         toolbar.add_top_bar(self._search_bar)
 
         scroll = Gtk.ScrolledWindow()
