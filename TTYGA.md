@@ -18,7 +18,7 @@ The sidebar holds your profiles, organised into groups. Show or hide it with **C
 
 At the top of the sidebar is a search box. Start typing to filter profiles by name; press **Escape** to clear the search and return focus to the terminal.
 
-Profile buttons show the profile icon on the left, the name in the middle, and a `$` tag on the right for clippet profiles. If a profile has a colour set, a coloured stripe runs down the left edge of its button.
+Profile buttons show the profile icon on the left, the name in the middle, and a `$` tag on the right for clippet profiles. If a profile has a colour set, a coloured stripe runs down the left edge of its button. The icon also appears in the tab label when the profile is open.
 
 ---
 

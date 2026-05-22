@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2896,6 +2896,14 @@ class DevFrame(Adw.Application):
             elif Path(icon).expanduser().is_file():
                 icon_widget = Gtk.Image.new_from_file(str(Path(icon).expanduser()))
                 icon_widget.set_pixel_size(14)
+                box.append(icon_widget)
+            else:
+                icon_widget = Gtk.Label()
+                icon_widget.set_markup(
+                    f'<span size="small">{GLib.markup_escape_text(icon)}</span>')
+                icon_widget.set_size_request(14, 14)
+                icon_widget.set_xalign(0.5)
+                icon_widget.set_yalign(0.5)
                 box.append(icon_widget)
 
         label = Gtk.Label(label=title)

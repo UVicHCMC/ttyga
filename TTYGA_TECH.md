@@ -84,7 +84,7 @@ Each tab runs its own bash shell. A small coloured dot in each tab label is **gr
 
 Right-clicking a tab label opens the profile editor for that profile.
 
-The tab label for profile tabs follows the profile's classifier title. Plain tabs follow the terminal's OSC 2 window title (usually the shell's `$PROMPT_COMMAND` output).
+The tab label for profile tabs follows the profile's classifier title. Plain tabs follow the terminal's OSC 2 window title (usually the shell's `$PROMPT_COMMAND` output). If the profile has an `icon` field set, the icon appears in the tab label to the left of the title — XDG icon names, file paths, and Unicode characters (including emoji) are all supported.
 
 ---
 
