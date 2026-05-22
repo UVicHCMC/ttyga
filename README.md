@@ -47,6 +47,12 @@ Profiles live in `~/.config/ttyga/profiles.yaml`. See [`profiles.yaml.example`](
 - [`TTYGA.md`](TTYGA.md) — user guide
 - [`TTYGA_TECH.md`](TTYGA_TECH.md) — power-user reference: full YAML schema, classifier titles, variables, split pane details
 
+## How it was built
+
+ttyga was built entirely through conversational AI-assisted development — no code was written by hand. The design, architecture, and implementation were developed iteratively through dialogue with Claude (Anthropic), with each feature discussed, drafted, and refined in conversation before being committed. The result is a functional, single-file GTK4 application that grew organically from a rough idea into a versioned, documented tool without the author writing a line of Python directly.
+
+This is sometimes called "vibe coding," though the process here was closer to AI pair programming: the human drove all design decisions, caught problems, and directed the work; Claude handled the syntax and boilerplate.
+
 ## Licence
 
 GPL v3 — see [LICENSE](LICENSE).
