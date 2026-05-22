@@ -30,7 +30,7 @@ sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-vte-2.91 python3-
 ## Install
 
 ```
-git clone https://github.com/your-org/ttyga.git
+git clone https://github.com/UVicHCMC/ttyga.git
 cd ttyga
 ./install.sh
 ```
