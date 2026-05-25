@@ -46,6 +46,9 @@ if "$UNINSTALL"; then
         run rm -f "$ICONS_BASE/$size/apps/ca.greg.ttyga.png"
     done
     run rm -f "$ICONS_BASE/scalable/apps/ca.greg.ttyga.svg"
+    run rm -f "$ICONS_BASE/scalable/apps/ttyga-watermark.svg"
+    run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-horiz-symbolic.svg"
+    run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
     run update-desktop-database "$APPS_DIR" 2>/dev/null || true
     run gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
     echo "Done."
@@ -93,11 +96,23 @@ for size in $ICON_SIZES; do
     run install -m 644 "$src" "$dst"
 done
 
-# Scalable SVG
+# Scalable app icons
 run mkdir -p "$ICONS_BASE/scalable/apps"
 run install -m 644 \
     "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/apps/ttyga.svg" \
     "$ICONS_BASE/scalable/apps/ca.greg.ttyga.svg"
+run install -m 644 \
+    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/apps/ttyga-watermark.svg" \
+    "$ICONS_BASE/scalable/apps/ttyga-watermark.svg"
+
+# Scalable action icons
+run mkdir -p "$ICONS_BASE/scalable/actions"
+run install -m 644 \
+    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-horiz-symbolic.svg" \
+    "$ICONS_BASE/scalable/actions/ttyga-split-horiz-symbolic.svg"
+run install -m 644 \
+    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-vert-symbolic.svg" \
+    "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
 
 if ! "$DRY_RUN"; then
     cat > "$APPS_DIR/ca.greg.ttyga.desktop" <<'EOF'

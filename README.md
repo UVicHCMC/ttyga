@@ -4,7 +4,8 @@
 
 The terminal launcher that remembers where you go.
 
-ttyga (/ˈtaɪ.ɡə/, like the biome) is a GTK4 terminal for GNOME with a profile sidebar. Instead of digging through shell history or a notes file, you keep profiles — click one and a new tab opens straight into an SSH session, a command ready to review, or a script that runs immediately.
+ttyga (/ˈtaɪ.ɡə/, like the biome) is a GTK4 terminal for GNOME with a profile sidebar. Instead of digging through shell history or a notes file, you keep profiles — click one and a new tab opens straight into an SSH session, a command ready to review, or a script that runs immediately. The pronunciation is intended to invoke northern imagery (like a pinecone), but the name is really just 'tty Gnome Application'.
+
 ## Features
 
 - **Profile sidebar** — SSH connections, shell commands, and clippets organised into groups

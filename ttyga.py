@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.7"
+APP_VERSION = "0.5.8"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -57,6 +57,7 @@ SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
 STATE_FILE    = CONFIG_DIR / "app_state.json"
 LEGACY_CONFIG = Path(__file__).parent / "profiles.yaml"
 
+# These will be overridden by settings in ~/.config/ttyga/settings.yaml
 DEFAULT_SETTINGS = {
     'color_scheme':      'nord',      # light | dark | nord
     'sidebar_layout':    'expanders', # expanders | flat
@@ -91,6 +92,23 @@ PROFILE_ICON_PX  = 24     # sidebar profile button icon size
 def _is_gtk_icon(s):
     """True if s looks like a GTK icon name (pure ASCII, lowercase/digits/hyphens)."""
     return bool(s) and bool(re.match(r'^[a-z0-9][a-z0-9_-]*$', s))
+
+def _implied_cwd(cmd):
+    """Return the directory implied by a leading 'cd PATH' in cmd, or None.
+
+    Handles the common clippet pattern 'cd /some/path && program …' so that
+    split-pane and open-in actions land in the right directory even when the
+    shell never emits an OSC 7 sequence (e.g. because a program like claude
+    is blocking the prompt).
+    """
+    if not cmd:
+        return None
+    m = re.match(r'cd\s+([^\s&;|]+)', cmd.strip())
+    if m:
+        path = str(Path(m.group(1)).expanduser())
+        if os.path.isdir(path):
+            return path
+    return None
 
 def _apply_vars(text, vars_dict):
     """Substitute @key tokens in text using vars_dict; unmatched tokens are left as-is."""
@@ -488,17 +506,6 @@ button.suggested-action {{
 button.suggested-action:hover {{
     background: shade({t['accent']}, 1.15);
     color: {t['accent_fg']};
-}}
-
-/* Sidebar watermark ------------------------------------------------------- */
-
-.sidebar-watermark {{
-    opacity: 0.18;
-}}
-.sidebar-watermark-label {{
-    font-size: 8pt;
-    font-weight: 700;
-    letter-spacing: 0.1em;
 }}
 
 /* Sidebar resize handle --------------------------------------------------- */
@@ -2306,7 +2313,7 @@ class DevFrame(Adw.Application):
         kind = 'ssh' if (profile and profile.get('type') == 'ssh') else 'local'
         title = (self._build_classifier_title(profile)
                  if profile else f"{_LOCAL_USER}@{_LOCAL_HOST}")
-        tab_icon = profile.get('icon', '') if profile else None
+        tab_icon = self._profile_icon(profile)
 
         tab_box, tab_label, close_btn, dot = self._make_tab_label(title, kind=kind, icon=tab_icon)
 
@@ -2444,15 +2451,21 @@ class DevFrame(Adw.Application):
 
         wm_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         wm_box.add_css_class('sidebar-watermark')
-        wm_box.set_halign(Gtk.Align.CENTER)
+        wm_box.set_halign(Gtk.Align.FILL)
         wm_box.set_margin_top(6)
-        wm_box.set_margin_bottom(12)
-        wm_img = Gtk.Image.new_from_icon_name(APP_ID)
-        wm_img.set_pixel_size(22)
+        wm_box.set_margin_bottom(0)
+        _wm_display = Gdk.Display.get_default()
+        _wm_theme   = Gtk.IconTheme.get_for_display(_wm_display) if _wm_display else None
+        _wm_icon    = (_wm_theme.lookup_icon('ttyga-watermark', [], 400, 1,
+                                             Gtk.TextDirection.NONE, 0)
+                       if _wm_theme else None)
+        _wm_file    = _wm_icon.get_file() if _wm_icon else None
+        wm_img = Gtk.Picture.new_for_file(_wm_file) if _wm_file else Gtk.Picture()
+        wm_img.set_hexpand(True)
+        wm_img.set_can_shrink(True)
+        wm_img.set_content_fit(Gtk.ContentFit.CONTAIN)
+        wm_img.set_size_request(-1, 160)
         wm_box.append(wm_img)
-        wm_lbl = Gtk.Label(label=APP_NAME)
-        wm_lbl.add_css_class('sidebar-watermark-label')
-        wm_box.append(wm_lbl)
         sidebar_inner.append(wm_box)
 
         sidebar_outer.append(sidebar_inner)
@@ -2630,6 +2643,17 @@ class DevFrame(Adw.Application):
 
     # ----- menu actions ----------------------------------------------------
 
+    def _profile_icon(self, profile):
+        """Effective display icon for a profile: own icon > group icon > ''."""
+        if not profile:
+            return ''
+        icon = profile.get('icon', '')
+        if icon:
+            return icon
+        g_name = profile.get('group', 'General')
+        _, group_icons = _parse_groups(self.load_config())
+        return group_icons.get(g_name, '')
+
     def _get_open_path(self, terminal):
         """Return a local path for the open-in actions.
 
@@ -2647,12 +2671,9 @@ class DevFrame(Adw.Application):
         meta = self.tabs.get(terminal, {})
         profile = meta.get('profile')
         if profile:
-            cmd = profile.get('options', {}).get('command', '')
-            m = re.match(r'cd\s+([^\s&;|]+)', cmd.strip())
-            if m:
-                path = str(Path(m.group(1)).expanduser())
-                if os.path.isdir(path):
-                    return path
+            implied = _implied_cwd(profile.get('options', {}).get('command', ''))
+            if implied:
+                return implied
         return meta.get('spawn_dir', os.environ.get('HOME', '/'))
 
     def _on_open_vscode(self, *args):
@@ -3007,7 +3028,7 @@ class DevFrame(Adw.Application):
 
         lbl = Gtk.Label(label=lbl_text)
         lbl.set_hexpand(True)
-        lbl.set_xalign(0)
+        lbl.set_xalign(0.5)
         lbl.set_ellipsize(Pango.EllipsizeMode.END)
         bar.append(lbl)
 
@@ -3109,7 +3130,7 @@ class DevFrame(Adw.Application):
             terminal = self._new_terminal(on_spawn=on_spawn, profile=profile, **spawn_kwargs)
         else:
             terminal = self._new_terminal(profile=profile, **spawn_kwargs)
-        tab_icon = profile.get('icon', '') if profile else None
+        tab_icon = self._profile_icon(profile)
         tab_box, tab_label, close_btn, dot = self._make_tab_label(title, kind=kind, icon=tab_icon)
         close_btn.connect("clicked", self._on_close_tab, terminal)
         if profile:
@@ -3137,7 +3158,9 @@ class DevFrame(Adw.Application):
             'profile':   profile,
             'base_font': base_font,
             'tab_root':  tab_root,
-            'spawn_dir': str(Path(p_cwd).expanduser()) if p_cwd else os.environ.get('HOME', '/'),
+            'spawn_dir': (str(Path(p_cwd).expanduser()) if p_cwd
+                          else _implied_cwd(opts.get('command', ''))
+                          or os.environ.get('HOME', '/')),
         }
         tab_root.append(self._make_pane_box(terminal, self.tabs[terminal]))
         self._update_pane_bars(tab_root)
@@ -3285,7 +3308,14 @@ class DevFrame(Adw.Application):
             parent.append(paned)
         elif isinstance(parent, Gtk.Paned):
             is_start = parent.get_start_child() is wrapper
-            wrapper.unparent()
+            # Use set_*_child(None) — the idiomatic GTK4 way to detach Paned
+            # children. Calling wrapper.unparent() from the child side re-enters
+            # GtkPaned's internal remove vfunc, which calls gtk_widget_unparent()
+            # on the same widget again, causing a segfault.
+            if is_start:
+                parent.set_start_child(None)
+            else:
+                parent.set_end_child(None)
             paned.set_start_child(wrapper)
             paned.set_end_child(new_wrapper)
             if is_start:
