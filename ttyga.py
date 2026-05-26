@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.6.7"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -549,6 +549,21 @@ paned > separator:hover {{
     min-height: 18px;
     min-width: 18px;
     border-radius: 4px;
+}}
+
+/* Tab context menu popover ------------------------------------------------ */
+
+popover > contents {{
+    background: {t['bg_sidebar']};
+    color: {t['fg']};
+}}
+popover > contents button.flat {{
+    color: {t['fg']};
+    border-radius: 4px;
+}}
+popover > contents button.flat:hover {{
+    background: {t['row_hover']};
+    color: {t['fg']};
 }}
 
 /* Welcome screen ---------------------------------------------------------- */
