@@ -172,6 +172,36 @@ profiles:
     classifier:
       title: code my-project
 
+  # shell_below: true splits the tab vertically — command on top, plain shell
+  # below.  Toggle "Shell below" in the profile editor, or add the key here.
+  - name: My Project — dev server
+    group: Projects
+    type: clippet
+    icon: media-playback-start-symbolic
+    cwd: ~/Projects/my-project
+    shell_below: true
+    options:
+      command: npm run dev
+      auto_execute: true
+
+  # Full layout: tree — arbitrary split depth.  shell_below covers most cases;
+  # use layout: when you need more than two panes or a horizontal split.
+  - name: My Project — workspace
+    group: Projects
+    type: clippet
+    icon: folder-symbolic
+    cwd: ~/Projects/my-project
+    layout:
+      split: horizontal
+      start:
+        command: vim .
+      end:
+        split: vertical
+        start:
+          command: npm run dev
+          auto_execute: true
+        end: {}
+
   # ------------------------------------------------------------------
   # Docker — variable prompts let one profile cover many containers
   # ------------------------------------------------------------------

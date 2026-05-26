@@ -129,6 +129,7 @@ After editing by hand, press **Ctrl+Alt+R** to reload without restarting.
 | `classifier` | no | Controls the tab label |
 | `extends` | no | Name of another profile to inherit from — see *Profile inheritance* below |
 | `hidden` | no | `true` to hide this profile from the sidebar (useful for base profiles) |
+| `shell_below` | no | `true` to open the profile's command in the top pane with a plain shell below it — a quick alternative to writing a full `layout:` tree; ignored when `layout:` is present |
 | `layout` | no | Multi-pane split tree opened on click — see *Profile layouts* below |
 
 ### SSH profiles
@@ -216,6 +217,21 @@ Pastes a shell command into the terminal. With `auto_execute: true` a newline is
     command: ./deploy.sh production
     auto_execute: true
 ```
+
+**Example — shell pane below the command:**
+
+```yaml
+- name: My Tool
+  type: clippet
+  group: Projects
+  cwd: ~/projects/mytool
+  shell_below: true
+  options:
+    command: mytool serve
+    auto_execute: true
+```
+
+Clicking this profile opens a vertically split tab: `mytool serve` running in the top pane, a plain shell in the bottom pane (in the same `cwd`). Toggle **Shell below** in the profile editor instead of writing this by hand. A `layout:` key always takes precedence over `shell_below`.
 
 **Multi-line commands** use YAML block scalar syntax:
 
@@ -395,7 +411,8 @@ Clicking this profile opens one tab with three panes: vim on the left, make watc
 
 Notes:
 - Layout panes always run locally, regardless of the profile's `type`. The base profile provides appearance (font, colour scheme, env vars) but not the connection type.
-- The profile editor does not yet have a UI for `layout:` — edit the YAML by hand and press **Ctrl+Alt+R** to reload.
+- The profile editor does not have a UI for `layout:` — edit the YAML by hand and press **Ctrl+Alt+R** to reload.
+- For the common case of a command pane with a plain shell below it, use `shell_below: true` instead — it is toggleable in the profile editor and requires no hand-written layout tree.
 
 ---
 
@@ -417,7 +434,7 @@ The right panel form fields:
 | **Theme** | Default / Light / Dark / Nord — per-profile terminal colour scheme |
 | **Font** | Pango font description; **Choose…** opens the system font picker; leave blank to inherit global |
 | **Host / User / Port** | SSH fields; **From SSH config…** populates from `~/.ssh/config` |
-| **Command / Auto-execute / Run in current tab** | Clippet fields |
+| **Command / Auto-execute / Run in current tab / Shell below** | Clippet fields |
 | **Classifier title** | Optional tab label template with `@` tokens |
 | **Working dir** | `cwd` override for the spawned shell |
 | **Environment** | `KEY=value` lines, one per line; merged with the inherited environment |

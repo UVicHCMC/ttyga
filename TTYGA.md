@@ -85,7 +85,9 @@ Clicking this profile opens one tab with three panes: vim on the left, `make wat
 
 Each leaf node can have a `command:` (runs immediately by default), a `cwd:` override, and `auto_execute: false` to paste the command for review instead of running it. An empty mapping `{}` opens a plain shell.
 
-The profile editor does not yet have a UI for layouts — edit `profiles.yaml` by hand and press **Ctrl+Alt+R** to reload. See `TTYGA_TECH.md` for the full syntax.
+For the common case of a command pane with a plain shell below it, use **Shell below** in the profile editor — no YAML needed. It adds `shell_below: true` to the profile and opens a vertical split automatically. A hand-written `layout:` always takes precedence.
+
+The profile editor does not have a UI for the full `layout:` tree — edit `profiles.yaml` by hand and press **Ctrl+Alt+R** to reload. See `TTYGA_TECH.md` for the full syntax.
 
 ---
 
