@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.5"
+APP_VERSION = "0.6.6"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -3352,6 +3352,12 @@ class DevFrame(Adw.Application):
             self._active_terminal = None
         self.notebook.remove_page(page_num)
         if last_tab:
+            # switch-page won't fire when there are no pages left, so clear the
+            # sidebar highlight manually — _on_tab_switched never gets called.
+            if self.active_btn:
+                self.active_btn.remove_css_class('active')
+                self.active_btn = None
+            self.active_profile_key = None
             self._show_welcome()
 
     def _get_active_terminal(self):
