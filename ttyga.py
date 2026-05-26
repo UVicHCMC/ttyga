@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.7"
+APP_VERSION = "0.6.8"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -994,9 +994,14 @@ class EditorWindow(Adw.Window):
         self.in_place_switch.set_halign(Gtk.Align.START)
         self.in_place_switch.set_valign(Gtk.Align.CENTER)
 
-        self._attach(clip_grid, 0, "Command",        cmd_scroll)
-        self._attach(clip_grid, 1, "Auto-execute",   self.auto_exec_switch)
+        self.shell_below_switch = Gtk.Switch()
+        self.shell_below_switch.set_halign(Gtk.Align.START)
+        self.shell_below_switch.set_valign(Gtk.Align.CENTER)
+
+        self._attach(clip_grid, 0, "Command",          cmd_scroll)
+        self._attach(clip_grid, 1, "Auto-execute",     self.auto_exec_switch)
         self._attach(clip_grid, 2, "Run in current tab", self.in_place_switch)
+        self._attach(clip_grid, 3, "Shell below",      self.shell_below_switch)
         self.stack.add_named(clip_grid, "clippet")
         self.form_box.append(self.stack)
 
@@ -1346,6 +1351,7 @@ class EditorWindow(Adw.Window):
         self.command_view.get_buffer().set_text(opts.get('command', ''))
         self.auto_exec_switch.set_active(opts.get('auto_execute', False))
         self.in_place_switch.set_active(opts.get('in_place', False))
+        self.shell_below_switch.set_active(p.get('shell_below', False))
 
         classifier = p.get('classifier') or {}
         self.classifier_entry.set_text(classifier.get('title', ''))
@@ -1408,6 +1414,10 @@ class EditorWindow(Adw.Window):
                 'auto_execute': self.auto_exec_switch.get_active(),
                 'in_place':     self.in_place_switch.get_active(),
             }
+            if self.shell_below_switch.get_active():
+                p['shell_below'] = True
+            else:
+                p.pop('shell_below', None)
 
         title = self.classifier_entry.get_text().strip()
         if title:
@@ -3204,6 +3214,18 @@ class DevFrame(Adw.Application):
         p_cwd = profile.get('cwd', '') if profile else ''
         p_env = profile.get('env', {}) if profile else {}
         rv    = resolved_vars or {}
+
+        # --- Shell-below shorthand: synthesise a vertical split on the fly -----
+        if (profile and profile.get('shell_below') and not profile.get('layout')
+                and profile.get('type', 'clippet') != 'ssh'):
+            _opts = profile.get('options', {})
+            _cmd  = _apply_vars(_opts.get('command', ''), rv)
+            profile = dict(profile, layout={
+                'split': 'vertical',
+                'start': {'command': _cmd, 'cwd': p_cwd or '',
+                          'auto_execute': _opts.get('auto_execute', False)},
+                'end': {},
+            })
 
         # --- Layout path: profile defines a multi-pane tree --------------------
         if profile and profile.get('layout'):
