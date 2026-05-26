@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.5"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2415,7 +2415,9 @@ class DevFrame(Adw.Application):
         if focus:
             self.notebook.set_current_page(idx)
             if primary_term:
-                GLib.idle_add(lambda: GLib.idle_add(lambda: primary_term.grab_focus() or False) or False)
+                GLib.idle_add(lambda: GLib.idle_add(
+                    lambda: primary_term.grab_focus() and False,
+                    priority=GLib.PRIORITY_LOW) and False)
 
     def do_activate(self):
         if self.window:
@@ -3219,7 +3221,8 @@ class DevFrame(Adw.Application):
             self.notebook.set_current_page(idx)
             if focus and first_term:
                 GLib.idle_add(lambda t=first_term:
-                              GLib.idle_add(lambda: t.grab_focus() or False) or False)
+                              GLib.idle_add(lambda: t.grab_focus() and False,
+                                            priority=GLib.PRIORITY_LOW) and False)
             return
         # -----------------------------------------------------------------------
 
@@ -3322,7 +3325,17 @@ class DevFrame(Adw.Application):
         self.notebook.set_tab_reorderable(tab_root, True)
         self.notebook.set_current_page(idx)
         if focus:
-            GLib.idle_add(lambda: GLib.idle_add(lambda: terminal.grab_focus() or False) or False)
+            # Schedule grab_focus at GLib.PRIORITY_LOW (300) so GDK's display
+            # flush (PRIORITY_DEFAULT_IDLE = 200) always runs first.  After a
+            # tab switch, VTE renders the new terminal and enqueues a burst of
+            # Wayland protocol.  If grab_focus fires before GDK drains that
+            # burst, the Wayland socket buffer can overflow and GDK aborts.
+            # The outer idle (default priority) still preserves the original
+            # "land after GTK's own focus-management work" guarantee; the inner
+            # idle at PRIORITY_LOW lands after GDK's flush.
+            GLib.idle_add(lambda: GLib.idle_add(
+                lambda: terminal.grab_focus() and False,
+                priority=GLib.PRIORITY_LOW) and False)
 
     def _on_close_tab(self, btn, terminal):
         """Close the whole tab (all panes). Called by the tab close button."""
@@ -3493,6 +3506,11 @@ class DevFrame(Adw.Application):
                           grandparent.get_start_child() is parent)
 
         # Use set_*_child(None) — the idiomatic GTK4 way to detach Paned children.
+        # Remove the closing pane first, then the sibling (which we will re-parent).
+        # GTK emits a cosmetic "Error finding last focus widget of GtkPaned" warning
+        # when the second set_*_child(None) empties the paned; this is benign — the
+        # paned is immediately discarded after this block, so the focus confusion
+        # has no visible consequence.
         if is_start:
             parent.set_start_child(None)
             parent.set_end_child(None)
@@ -3622,6 +3640,10 @@ class DevFrame(Adw.Application):
         if source_content is None or target_content is None:
             return
 
+        # Capture both titles before any widget surgery.
+        target_title = target_meta['label'].get_label()
+        source_title = source_meta['label'].get_label()
+
         # Detach both subtrees before any surgery — Python holds refs so
         # neither is destroyed by the unparent.
         source_root.remove(source_content)
@@ -3654,7 +3676,37 @@ class DevFrame(Adw.Application):
         first = self._first_terminal_in(target_content)
         if first:
             self._active_terminal = first
-            GLib.idle_add(lambda: GLib.idle_add(lambda: first.grab_focus() or False) or False)
+
+        # Defer all visual tab-label updates (title, icon, CSS classes) to
+        # after GDK has flushed its Wayland protocol burst from the pane
+        # surgery above.  Doing these synchronously triggers a Wayland
+        # compositor deadlock on some compositors (whole desktop hangs).
+        # Same double-idle / PRIORITY_LOW pattern as the grab_focus sites.
+        def _update_merged_label():
+            # Update tab label to reflect the merged state:
+            #   title  → "target | source"
+            #   icon   → split-pane icon (hides any profile icon widget)
+            target_label.set_label(f"{target_title} | {source_title}")
+            tab_box = self.notebook.get_tab_label(target_root)
+            if tab_box:
+                # Hide the profile icon widget (second child, between dot and label).
+                child = tab_box.get_first_child()   # dot
+                if child:
+                    sibling = child.get_next_sibling()
+                    if sibling and sibling is not target_label:
+                        sibling.set_visible(False)   # hide profile icon
+            target_dot.set_from_icon_name('ttyga-split-horiz-symbolic')
+            target_dot.set_pixel_size(14)
+            target_dot.remove_css_class('tab-dot-ssh')
+            target_dot.remove_css_class('tab-dot-local')
+            target_dot.add_css_class('tab-dot-local')   # dim/neutral colour
+            target_dot.set_visible(True)
+            if first:
+                first.grab_focus()
+            return False
+
+        GLib.idle_add(lambda: GLib.idle_add(
+            _update_merged_label, priority=GLib.PRIORITY_LOW) and False)
 
     def _focus_adjacent_pane(self, direction):
         terminal = self._get_active_terminal()
@@ -4005,13 +4057,38 @@ class DevFrame(Adw.Application):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
-    app = DevFrame()
-    try:
-        app.register()
-    except GLib.Error:
-        pass  # D-Bus unavailable; proceed and let GIO sort it out
-    if app.get_is_remote():
-        print("ttyga: already running", file=sys.stderr)
-        sys.exit(1)
-    app.run(None)
+    import argparse, atexit, shutil, tempfile
+    parser = argparse.ArgumentParser(prog='ttyga', description=APP_COMMENTS)
+    parser.add_argument('--dev', action='store_true',
+                        help='Run with an isolated temp config dir and DEBUG logging. '
+                             'Bypasses single-instance guard. Settings, profiles, and '
+                             'saved state in ~/.config/ttyga are left untouched.')
+    args = parser.parse_args()
+
+    if args.dev:
+        _dev_tmp   = tempfile.TemporaryDirectory(prefix='ttyga_dev_')
+        _dev_tmpdir = _dev_tmp.name
+        CONFIG_DIR    = Path(_dev_tmpdir)
+        CONFIG_FILE   = CONFIG_DIR / "profiles.yaml"
+        SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
+        STATE_FILE    = CONFIG_DIR / "app_state.json"
+        LEGACY_CONFIG = Path('/dev/null')   # prevent source-dir profiles.yaml fallback
+        import faulthandler
+        faulthandler.enable()   # dump traceback on SIGSEGV / SIGFPE / SIGABRT
+        logging.basicConfig(level=logging.DEBUG,
+                            format='%(levelname)s %(name)s: %(message)s')
+        print(f"[dev] config dir: {_dev_tmpdir}", file=sys.stderr, flush=True)
+        app = DevFrame()
+        app.run(None)
+        _dev_tmp.cleanup()
+    else:
+        logging.basicConfig(level=logging.WARNING)
+        app = DevFrame()
+        try:
+            app.register()
+        except GLib.Error:
+            pass  # D-Bus unavailable; proceed and let GIO sort it out
+        if app.get_is_remote():
+            print("ttyga: already running", file=sys.stderr)
+            sys.exit(1)
+        app.run(None)

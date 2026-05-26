@@ -101,8 +101,11 @@ paned.set_start_child(None)   # or set_end_child(None)
 A single `GLib.idle_add(lambda: widget.grab_focus())` races with GTK's own focus-management work after a tab switch. Use a nested double idle to reliably land after GTK finishes:
 
 ```python
-GLib.idle_add(lambda: GLib.idle_add(lambda: terminal.grab_focus() or False) or False)
+GLib.idle_add(lambda: GLib.idle_add(lambda: terminal.grab_focus() and False,
+                                    priority=GLib.PRIORITY_LOW) and False)
 ```
+
+**Critical**: use `and False`, not `or False`. `GLib.idle_add()` returns a non-zero source ID; `source_id or False` = `source_id` (truthy), so the outer idle re-fires forever. `Gtk.Widget.grab_focus()` returns `True` on success; `True or False` = `True`, so the inner also re-fires forever. Either bug alone causes unbounded GLib GSource accumulation (28 GB RSS observed over ~8 h). `and False` short-circuits to `False` in both cases, correctly removing the idle.
 
 ### Profile resolution
 
