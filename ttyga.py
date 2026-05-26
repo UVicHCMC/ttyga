@@ -20,6 +20,7 @@ import copy
 import gi
 import os
 import socket
+import sys
 import tempfile
 import yaml
 import json
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
