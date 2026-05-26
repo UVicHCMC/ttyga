@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.9"
+APP_VERSION = "0.6.0"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -477,8 +477,9 @@ notebook tab:checked {{
 notebook > header.top > tabs {{
     margin-bottom: 0;
 }}
-.tab-dot-ssh   {{ color: {ssh_color or ('#2ec27e' if theme == 'light' else '#57e389' if theme == 'dark' else '#a3d977')}; }}
-.tab-dot-local {{ color: {t['fg_dim']}; }}
+.tab-dot-ssh      {{ color: {ssh_color or ('#2ec27e' if theme == 'light' else '#57e389' if theme == 'dark' else '#a3d977')}; }}
+.tab-dot-local    {{ color: {t['fg_dim']}; }}
+.tab-dot-activity {{ color: {t['term_warn']}; }}
 
 /* Editor list ------------------------------------------------------------- */
 
@@ -2307,6 +2308,75 @@ class DevFrame(Adw.Application):
         }
         return self._make_pane_box(terminal, self.tabs[terminal])
 
+    def _build_profile_layout(self, node, tab_root, tab_label, dot,
+                               base_profile, base_cwd, base_env):
+        """Recursively build a pane tree from a profile layout: node.
+
+        Split node:  {'split': 'horizontal'|'vertical', 'start': <node>, 'end': <node>}
+        Leaf node:   {'command': '...', 'cwd': '...', 'auto_execute': true}
+        Plain shell: {} or omitted
+        """
+        if node and 'split' in node:
+            orientation = (Gtk.Orientation.HORIZONTAL
+                           if str(node['split']).lower() == 'horizontal'
+                           else Gtk.Orientation.VERTICAL)
+            paned = Gtk.Paned(orientation=orientation)
+            paned.set_hexpand(True)
+            paned.set_vexpand(True)
+            start = self._build_profile_layout(
+                node.get('start') or {}, tab_root, tab_label, dot,
+                base_profile, base_cwd, base_env)
+            end = self._build_profile_layout(
+                node.get('end') or {}, tab_root, tab_label, dot,
+                base_profile, base_cwd, base_env)
+            paned.set_start_child(start)
+            paned.set_end_child(end)
+            return paned
+
+        # Leaf node — spawn a terminal with an optional command.
+        node     = node or {}
+        cmd      = node.get('command', '').strip()
+        cwd      = node.get('cwd', base_cwd)
+        auto_exc = node.get('auto_execute', True)   # default: run immediately
+        font_str = ((base_profile.get('terminal_font') if base_profile else None) or
+                    self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
+
+        if cmd and auto_exc:
+            tmp = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.sh', prefix='ttyga_', delete=False)
+            tmp.write('[ -f ~/.bashrc ] && . ~/.bashrc\n')
+            tmp.write(cmd + '\n')
+            tmp.close()
+            def on_spawn(term, _f=tmp.name):
+                try:
+                    os.unlink(_f)
+                except OSError:
+                    pass
+            terminal = self._new_terminal(
+                on_spawn=on_spawn, shell_args=['--init-file', tmp.name],
+                cwd=cwd, env=base_env, profile=base_profile)
+        elif cmd:
+            def on_spawn(term):
+                GLib.timeout_add(300, lambda: term.feed_child(cmd.encode('utf-8')) or False)
+            terminal = self._new_terminal(
+                on_spawn=on_spawn, cwd=cwd, env=base_env, profile=base_profile)
+        else:
+            terminal = self._new_terminal(cwd=cwd, env=base_env, profile=base_profile)
+
+        spawn_dir = (str(Path(cwd).expanduser()) if cwd
+                     else _implied_cwd(cmd) or os.environ.get('HOME', '/'))
+        self.tabs[terminal] = {
+            'label':      tab_label,
+            'dot':        dot,
+            'kind':       'local',
+            'profile':    base_profile,
+            'base_font':  font_str,
+            'tab_root':   tab_root,
+            'spawn_dir':  spawn_dir,
+            'pane_label': cmd,               # show command in pane-bar; empty = plain shell
+        }
+        return self._make_pane_box(terminal, self.tabs[terminal])
+
     def _restore_tab(self, layout, by_key, focus=False):
         """Reconstruct a tab from a serialised layout dict."""
         profile = self._find_primary_profile(layout, by_key)
@@ -2335,10 +2405,7 @@ class DevFrame(Adw.Application):
         primary_term = self._first_terminal_in(tab_root)
         if primary_term:
             close_btn.connect("clicked", self._on_close_tab, primary_term)
-        if profile:
-            rc = Gtk.GestureClick(button=3)
-            rc.connect('pressed', lambda g, _n, _x, _y, _p=profile: self._edit_profile(_p))
-            tab_box.add_controller(rc)
+            self._attach_tab_context_menu(tab_box, primary_term)
 
         self._update_pane_bars(tab_root)
         self._show_notebook()
@@ -2910,6 +2977,7 @@ class DevFrame(Adw.Application):
         terminal.connect('selection-changed', self._on_term_selection_changed)
         terminal.connect('window-title-changed', self._on_terminal_title_changed)
         terminal.connect('notify::has-focus', self._on_terminal_focus)
+        terminal.connect('contents-changed', self._on_terminal_activity)
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self.on_key_pressed)
@@ -2956,6 +3024,11 @@ class DevFrame(Adw.Application):
             term = self._first_terminal_in(tab_root)
             self._active_terminal = term
 
+        # Clear the activity indicator for the tab we just switched to.
+        dot = self.tabs.get(term, {}).get('dot') if term else None
+        if dot:
+            dot.remove_css_class('tab-dot-activity')
+
         profile = self.tabs.get(term, {}).get('profile') if term else None
         key = (profile.get('name'), profile.get('group', 'General')) if profile else None
 
@@ -2975,6 +3048,23 @@ class DevFrame(Adw.Application):
     def _on_terminal_focus(self, terminal, _param):
         if terminal.has_focus():
             self._active_terminal = terminal
+            dot = self.tabs.get(terminal, {}).get('dot')
+            if dot:
+                dot.remove_css_class('tab-dot-activity')
+
+    def _on_terminal_activity(self, terminal):
+        """Add an activity indicator to a tab's dot when output arrives while unfocused."""
+        meta = self.tabs.get(terminal)
+        if not meta:
+            return
+        # Only flag background tabs — not the one currently on screen.
+        current = self.notebook.get_current_page()
+        current_root = self.notebook.get_nth_page(current) if current >= 0 else None
+        if meta.get('tab_root') is current_root:
+            return
+        dot = meta.get('dot')
+        if dot and not dot.has_css_class('tab-dot-activity'):
+            dot.add_css_class('tab-dot-activity')
 
     def _on_terminal_title_changed(self, terminal):
         title = terminal.get_window_title()
@@ -3038,9 +3128,12 @@ class DevFrame(Adw.Application):
         bar.add_css_class('pane-bar')
         bar.set_hexpand(True)
 
-        profile = meta.get('profile')
-        kind    = meta.get('kind', 'local')
-        if profile:
+        profile    = meta.get('profile')
+        kind       = meta.get('kind', 'local')
+        pane_label = meta.get('pane_label')           # explicit override (layout panes)
+        if pane_label is not None:
+            lbl_text = pane_label
+        elif profile:
             if kind == 'ssh':
                 opts = profile.get('options', {})
                 user = opts.get('user', '').strip()
@@ -3090,11 +3183,47 @@ class DevFrame(Adw.Application):
     def add_tab(self, *args, profile=None, focus=True, cwd=None, resolved_vars=None):
         self.tab_count += 1
 
-        p_type    = profile.get('type', 'clippet') if profile else None
-        opts      = profile.get('options', {})      if profile else {}
-        p_cwd     = profile.get('cwd', '')          if profile else ''
-        p_env     = profile.get('env', {})          if profile else {}
-        rv        = resolved_vars or {}
+        p_cwd = profile.get('cwd', '') if profile else ''
+        p_env = profile.get('env', {}) if profile else {}
+        rv    = resolved_vars or {}
+
+        # --- Layout path: profile defines a multi-pane tree --------------------
+        if profile and profile.get('layout'):
+            title    = self._build_classifier_title(profile, cwd=cwd, resolved_vars=rv)
+            tab_icon = self._profile_icon(profile)
+            tab_box, tab_label, close_btn, dot = self._make_tab_label(
+                title, kind='local', icon=tab_icon)
+            color = profile.get('color', '')
+            if color:
+                dot_prov = Gtk.CssProvider()
+                dot_prov.load_from_string(f"image {{ color: {color}; }}")
+                dot.get_style_context().add_provider(
+                    dot_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+            tab_root = Gtk.Box()
+            tab_root.set_hexpand(True)
+            tab_root.set_vexpand(True)
+            content = self._build_profile_layout(
+                profile['layout'], tab_root, tab_label, dot,
+                profile, str(Path(p_cwd).expanduser()) if p_cwd else None,
+                p_env or None)
+            tab_root.append(content)
+            self._update_pane_bars(tab_root)
+            first_term = self._first_terminal_in(tab_root)
+            if first_term:
+                close_btn.connect('clicked', self._on_close_tab, first_term)
+                self._attach_tab_context_menu(tab_box, first_term)
+            self._show_notebook()
+            idx = self.notebook.append_page(tab_root, tab_box)
+            self.notebook.set_tab_reorderable(tab_root, True)
+            self.notebook.set_current_page(idx)
+            if focus and first_term:
+                GLib.idle_add(lambda t=first_term:
+                              GLib.idle_add(lambda: t.grab_focus() or False) or False)
+            return
+        # -----------------------------------------------------------------------
+
+        p_type = profile.get('type', 'clippet') if profile else None
+        opts   = profile.get('options', {})      if profile else {}
 
         if profile:
             tmux_on      = bool(profile.get('tmux', False))
@@ -3159,15 +3288,13 @@ class DevFrame(Adw.Application):
         tab_box, tab_label, close_btn, dot = self._make_tab_label(title, kind=kind, icon=tab_icon)
         close_btn.connect("clicked", self._on_close_tab, terminal)
         if profile:
-            rc = Gtk.GestureClick(button=3)
-            rc.connect('pressed', lambda g, _n, _x, _y, _p=profile: self._edit_profile(_p))
-            tab_box.add_controller(rc)
             color = profile.get('color', '')
             if color:
                 dot_prov = Gtk.CssProvider()
                 dot_prov.load_from_string(f"image {{ color: {color}; }}")
                 dot.get_style_context().add_provider(
                     dot_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        self._attach_tab_context_menu(tab_box, terminal)
 
         base_font = ((profile.get('terminal_font') if profile else None) or
                      self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
@@ -3399,6 +3526,134 @@ class DevFrame(Adw.Application):
             self._on_close_tab(None, terminal)
         else:
             self._close_pane(terminal)
+
+    # ----- tab context menu (right-click) + merge ----------------------------
+
+    def _attach_tab_context_menu(self, tab_box, terminal):
+        """Attach a right-click gesture to a tab label that shows the context menu."""
+        rc = Gtk.GestureClick(button=3)
+        rc.connect('pressed', lambda g, _n, x, y, _t=terminal, _b=tab_box:
+                   self._show_tab_context_menu(_t, _b, x, y))
+        tab_box.add_controller(rc)
+
+    def _show_tab_context_menu(self, terminal, tab_box, x, y):
+        """Build and show the tab context menu at the click position."""
+        meta    = self.tabs.get(terminal, {})
+        profile = meta.get('profile')
+
+        # Collect other tabs that have exactly one pane (single-pane merge sources).
+        other_tabs = []
+        seen_roots = {meta.get('tab_root')}
+        for t, m in self.tabs.items():
+            root = m.get('tab_root')
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            if len(list(self._all_terminals_in(root))) != 1:
+                continue
+            title = m.get('label', Gtk.Label()).get_label() or 'Untitled'
+            other_tabs.append((t, title))
+
+        # Nothing to show for a plain tab with no mergeable peers.
+        if not profile and not other_tabs:
+            return
+
+        popover = Gtk.Popover()
+        popover.set_parent(tab_box)
+        popover.set_has_arrow(False)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+        popover.set_pointing_to(rect)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        vbox.set_margin_top(4)
+        vbox.set_margin_bottom(4)
+
+        if profile:
+            edit_btn = Gtk.Button(label='Edit profile')
+            edit_btn.add_css_class('flat')
+            edit_btn.set_halign(Gtk.Align.FILL)
+            edit_btn.connect('clicked', lambda _: (popover.popdown(), self._edit_profile(profile)))
+            vbox.append(edit_btn)
+
+        if other_tabs:
+            if profile:
+                sep = Gtk.Separator()
+                sep.set_margin_top(4)
+                sep.set_margin_bottom(4)
+                vbox.append(sep)
+            hdr = Gtk.Label(label='Merge with')
+            hdr.add_css_class('caption')
+            hdr.add_css_class('dim-label')
+            hdr.set_halign(Gtk.Align.START)
+            hdr.set_margin_start(8)
+            hdr.set_margin_bottom(2)
+            vbox.append(hdr)
+            for other_term, title in other_tabs:
+                btn = Gtk.Button(label=title)
+                btn.add_css_class('flat')
+                btn.set_halign(Gtk.Align.FILL)
+                btn.connect('clicked', lambda _, ot=other_term:
+                            (popover.popdown(), self._merge_tab_into(ot, terminal)))
+                vbox.append(btn)
+
+        popover.set_child(vbox)
+        popover.popup()
+
+    def _merge_tab_into(self, source_terminal, target_terminal):
+        """Merge source's tab into target's tab as a horizontal split.
+
+        The source's live terminal is reparented; its PTY session is uninterrupted.
+        All terminals from source are re-keyed to live in target's tab.
+        Source's (now empty) notebook page is then removed."""
+        source_meta = self.tabs.get(source_terminal)
+        target_meta = self.tabs.get(target_terminal)
+        if not source_meta or not target_meta:
+            return
+
+        source_root = source_meta['tab_root']
+        target_root = target_meta['tab_root']
+        if source_root is target_root:
+            return
+
+        source_content = source_root.get_first_child()
+        target_content = target_root.get_first_child()
+        if source_content is None or target_content is None:
+            return
+
+        # Detach both subtrees before any surgery — Python holds refs so
+        # neither is destroyed by the unparent.
+        source_root.remove(source_content)
+        target_root.remove(target_content)
+
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.set_hexpand(True)
+        paned.set_vexpand(True)
+        paned.set_start_child(target_content)
+        paned.set_end_child(source_content)
+        target_root.append(paned)
+
+        # Re-key all source terminals: they now live in target's tab.
+        target_label = target_meta['label']
+        target_dot   = target_meta['dot']
+        for t in list(self._all_terminals_in(source_content)):
+            m = self.tabs.get(t)
+            if m:
+                m['tab_root'] = target_root
+                m['label']    = target_label
+                m['dot']      = target_dot
+
+        # Remove the now-empty source page. source_root is empty so GTK has
+        # nothing to destroy inside it when it loses its last reference.
+        page_num = self.notebook.page_num(source_root)
+        if page_num >= 0:
+            self.notebook.remove_page(page_num)
+
+        self._update_pane_bars(target_root)
+        first = self._first_terminal_in(target_content)
+        if first:
+            self._active_terminal = first
+            GLib.idle_add(lambda: GLib.idle_add(lambda: first.grab_focus() or False) or False)
 
     def _focus_adjacent_pane(self, direction):
         terminal = self._get_active_terminal()
