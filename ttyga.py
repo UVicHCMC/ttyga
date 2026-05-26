@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.9"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -1970,7 +1970,7 @@ class HelpWindow(Adw.Window):
 class DevFrame(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID,
-                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+                         flags=Gio.ApplicationFlags(0))
         self.expanders   = {}      # group name -> Gtk.Expander (expanders layout)
         self.window      = None
         self.active_btn  = None    # currently highlighted profile row
@@ -2347,7 +2347,7 @@ class DevFrame(Adw.Application):
         if focus:
             self.notebook.set_current_page(idx)
             if primary_term:
-                GLib.idle_add(lambda: primary_term.grab_focus() and False)
+                GLib.idle_add(lambda: GLib.idle_add(lambda: primary_term.grab_focus() or False) or False)
 
     def do_activate(self):
         if self.window:
@@ -2655,11 +2655,10 @@ class DevFrame(Adw.Application):
         return group_icons.get(g_name, '')
 
     def _get_open_path(self, terminal):
-        """Return a local path for the open-in actions.
+        """Return a local filesystem path for open-in actions (VS Code, etc.).
 
-        Prefers OSC 7 from the terminal; falls back to the spawn directory
-        (profile cwd or HOME). Remote URIs from SSH tabs are silently ignored
-        since Nautilus/VS Code can't open them."""
+        Prefers OSC 7; skips remote URIs from SSH tabs (hostname present).
+        Falls back to an implied cwd from the profile command, then spawn_dir."""
         uri = terminal.get_current_directory_uri() if terminal else None
         if uri:
             try:
@@ -2676,6 +2675,31 @@ class DevFrame(Adw.Application):
                 return implied
         return meta.get('spawn_dir', os.environ.get('HOME', '/'))
 
+    def _get_nautilus_uri(self, terminal):
+        """Return a URI for Nautilus: sftp:// for SSH tabs, file:// for local.
+
+        For SSH tabs, uses the profile host and the remote path from OSC 7
+        (falls back to / when OSC 7 is unavailable on the remote)."""
+        meta    = self.tabs.get(terminal, {})
+        kind    = meta.get('kind', 'local')
+        profile = meta.get('profile')
+
+        if kind == 'ssh' and profile:
+            host = profile.get('options', {}).get('host', '').strip()
+            if host:
+                remote_path = '/'
+                uri = terminal.get_current_directory_uri() if terminal else None
+                if uri:
+                    try:
+                        path, _hostname = GLib.filename_from_uri(uri)
+                        if path:
+                            remote_path = path
+                    except Exception:
+                        pass
+                return f"sftp://{host}{remote_path}"
+
+        return GLib.filename_to_uri(self._get_open_path(terminal), None)
+
     def _on_open_vscode(self, *args):
         terminal = self._get_active_terminal()
         path = self._get_open_path(terminal) if terminal else os.environ.get('HOME', '/')
@@ -2686,8 +2710,9 @@ class DevFrame(Adw.Application):
 
     def _on_open_folder(self, *args):
         terminal = self._get_active_terminal()
-        path = self._get_open_path(terminal) if terminal else os.environ.get('HOME', '/')
-        Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(path, None), None)
+        uri = (self._get_nautilus_uri(terminal) if terminal
+               else GLib.filename_to_uri(os.environ.get('HOME', '/'), None))
+        Gio.AppInfo.launch_default_for_uri(uri, None)
 
     def _open_editor(self, *args, select_key=None):
         EditorWindow(self, select_key=select_key).present()
@@ -3169,7 +3194,7 @@ class DevFrame(Adw.Application):
         self.notebook.set_tab_reorderable(tab_root, True)
         self.notebook.set_current_page(idx)
         if focus:
-            GLib.idle_add(lambda: terminal.grab_focus() and False)
+            GLib.idle_add(lambda: GLib.idle_add(lambda: terminal.grab_focus() or False) or False)
 
     def _on_close_tab(self, btn, terminal):
         """Close the whole tab (all panes). Called by the tab close button."""
@@ -3726,4 +3751,11 @@ class DevFrame(Adw.Application):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
     app = DevFrame()
+    try:
+        app.register()
+    except GLib.Error:
+        pass  # D-Bus unavailable; proceed and let GIO sort it out
+    if app.get_is_remote():
+        print("ttyga: already running", file=sys.stderr)
+        sys.exit(1)
     app.run(None)
