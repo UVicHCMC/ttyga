@@ -82,7 +82,9 @@ Profile buttons show the profile icon, the name, and (for clippets) a `$` tag. I
 
 Each tab runs its own bash shell. A small coloured dot in each tab label is **green** for SSH sessions and dim for local shells. If the profile has a `color` field, the dot uses that colour instead. When a profile has an `icon` set, the dot is hidden and the icon itself is tinted green (SSH) or dim (local) instead. The SSH green colour can be overridden globally via the `ssh_color` setting in `settings.yaml` (e.g. `ssh_color: '#ff9900'`); leave it empty to use the theme default.
 
-Right-clicking a tab label opens the profile editor for that profile.
+Right-clicking a tab label opens a context menu. Profile tabs show **Edit profile** at the top. All tabs show a **Merge with** section listing other single-pane tabs — selecting one merges that tab's terminal into the current tab as a horizontal split. The source session continues uninterrupted.
+
+When a background tab receives output, its dot turns **amber** until you switch to it or focus one of its panes.
 
 The tab label for profile tabs follows the profile's classifier title. Plain tabs follow the terminal's OSC 2 window title (usually the shell's `$PROMPT_COMMAND` output). If the profile has an `icon` field set, the icon appears in the tab label to the left of the title — XDG icon names, file paths, and Unicode characters (including emoji) are all supported. If the profile has no `icon` but its group does, the group icon is used as the tab icon instead.
 
@@ -127,6 +129,7 @@ After editing by hand, press **Ctrl+Alt+R** to reload without restarting.
 | `classifier` | no | Controls the tab label |
 | `extends` | no | Name of another profile to inherit from — see *Profile inheritance* below |
 | `hidden` | no | `true` to hide this profile from the sidebar (useful for base profiles) |
+| `layout` | no | Multi-pane split tree opened on click — see *Profile layouts* below |
 
 ### SSH profiles
 
@@ -344,6 +347,55 @@ Rules:
 - `extends` is resolved away in the merged result — it does not appear at runtime.
 - Chains are supported (A extends B extends C); cycles are detected and logged as warnings.
 - `hidden: true` on the parent does not affect children — each controls its own visibility.
+
+---
+
+### Profile layouts
+
+A profile can open a pre-arranged multi-pane tab with a single click. Add a `layout:` key at the top level of the profile (alongside `name`, `type`, etc.). Its value is a tree of split and leaf nodes.
+
+**Split node** — divides the space and contains two child nodes:
+
+```yaml
+layout:
+  split: horizontal   # or vertical
+  start: <node>
+  end:   <node>
+```
+
+**Leaf node** — spawns a terminal with an optional command:
+
+```yaml
+command: make watch   # optional; auto_execute: true by default
+cwd: ~/projects/foo   # optional; inherits profile cwd if omitted
+auto_execute: false   # set to false to paste without running
+```
+
+An empty mapping `{}` (or omitting the node) opens a plain shell.
+
+**Example — 4-pane dev workspace:**
+
+```yaml
+- name: Dev workspace
+  type: clippet
+  cwd: ~/projects/myapp
+  layout:
+    split: horizontal
+    start:
+      command: vim .
+    end:
+      split: vertical
+      start:
+        command: make watch
+        auto_execute: true
+      end: {}
+```
+
+Clicking this profile opens one tab with three panes: vim on the left, make watch running immediately top-right, and a plain shell bottom-right.
+
+Notes:
+- Layout panes always run locally, regardless of the profile's `type`. The base profile provides appearance (font, colour scheme, env vars) but not the connection type.
+- The profile editor does not yet have a UI for `layout:` — edit the YAML by hand and press **Ctrl+Alt+R** to reload.
 
 ---
 

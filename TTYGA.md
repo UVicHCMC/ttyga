@@ -59,6 +59,36 @@ Variables are defined by hand in `profiles.yaml` — see `TTYGA_TECH.md` for the
 
 ---
 
+## Profile layouts
+
+A profile can open a pre-arranged multi-pane tab with one click — useful for repeatable workspaces where you always want the same set of terminals side by side.
+
+Add a `layout:` key to the profile in `profiles.yaml`. Layouts are defined as a tree of splits and leaf terminals:
+
+```yaml
+- name: Dev workspace
+  type: clippet
+  cwd: ~/projects/myapp
+  layout:
+    split: horizontal
+    start:
+      command: vim .
+    end:
+      split: vertical
+      start:
+        command: make watch
+        auto_execute: true
+      end: {}
+```
+
+Clicking this profile opens one tab with three panes: vim on the left, `make watch` running immediately top-right, and a plain shell bottom-right.
+
+Each leaf node can have a `command:` (runs immediately by default), a `cwd:` override, and `auto_execute: false` to paste the command for review instead of running it. An empty mapping `{}` opens a plain shell.
+
+The profile editor does not yet have a UI for layouts — edit `profiles.yaml` by hand and press **Ctrl+Alt+R** to reload. See `TTYGA_TECH.md` for the full syntax.
+
+---
+
 ## Creating profiles
 
 Open the profile editor with the pencil icon in the header bar.
@@ -79,7 +109,9 @@ Open the profile editor with the pencil icon in the header bar.
 
 **To delete a profile:** select it and click **−**.
 
-**To edit a profile from a tab:** right-click the tab label.
+**To edit a profile from a tab:** right-click the tab label and choose **Edit profile**.
+
+**To merge two tabs into a split:** right-click either tab label and choose a tab under **Merge with**. The two sessions are combined side by side in a single tab; both keep running without interruption. Only single-pane tabs appear as merge targets.
 
 ### SSH options
 
@@ -113,7 +145,7 @@ The sidebar width is draggable — grab the thin handle at its right edge to res
 
 ## Tab labels
 
-Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead. If the profile has an icon, the dot is hidden and the icon itself is tinted green or dim instead.
+Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead. If the profile has an icon, the dot is hidden and the icon itself is tinted green or dim instead. When a background tab receives new output, its dot turns **amber** until you switch to it or click one of its panes.
 
 For a plain tab the label follows the terminal title reported by your shell (usually the current directory). For a profile tab the label is set by the profile:
 
@@ -148,7 +180,9 @@ Each tab can be split into multiple panes, each running its own shell. The two s
 
 Panes can be resized by dragging the handle between them. The tab close button (×) always closes the whole tab regardless of how many panes it contains.
 
-New panes inherit context from the pane that was split: SSH panes reconnect to the same host; local panes open bash in the same working directory. The directory is taken from OSC 7 if your shell reports it, falling back to the directory implied by a leading `cd PATH` in the profile command (e.g. `cd ~/projects/foo && claude`), and then to the tab's launch directory. To run a different profile in a pane, click the profile in the sidebar while that pane has focus.
+New panes inherit context from the pane that was split: SSH panes reconnect to the same host; local panes open bash in the same working directory.
+
+You can also **merge two tabs** into a split by right-clicking either tab label and choosing a tab under **Merge with**. Both sessions continue uninterrupted — only the layout changes. The directory is taken from OSC 7 if your shell reports it, falling back to the directory implied by a leading `cd PATH` in the profile command (e.g. `cd ~/projects/foo && claude`), and then to the tab's launch directory. To run a different profile in a pane, click the profile in the sidebar while that pane has focus.
 
 ---
 
