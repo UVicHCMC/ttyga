@@ -85,7 +85,7 @@ Clicking this profile opens one tab with three panes: vim on the left, `make wat
 
 Each leaf node can have a `command:` (runs immediately by default), a `cwd:` override, and `auto_execute: false` to paste the command for review instead of running it. An empty mapping `{}` opens a plain shell.
 
-For the common case of a command pane with a plain shell below it, use **Shell below** in the profile editor — no YAML needed. It adds `shell_below: true` to the profile and opens a vertical split automatically. A hand-written `layout:` always takes precedence.
+For the common case of a command pane with a plain shell beside it, use **Shell split** in the profile editor — no YAML needed. Choose **Below** for a vertical split or **Beside** for a horizontal split. A hand-written `layout:` always takes precedence.
 
 The profile editor does not have a UI for the full `layout:` tree — edit `profiles.yaml` by hand and press **Ctrl+Alt+R** to reload. See `TTYGA_TECH.md` for the full syntax.
 
@@ -147,7 +147,7 @@ The sidebar width is draggable — grab the thin handle at its right edge to res
 
 ## Tab labels
 
-Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead. If the profile has an icon, the dot is hidden and the icon itself is tinted green or dim instead. When a background tab receives new output, its dot turns **amber** until you switch to it or click one of its panes.
+Each tab shows a coloured dot and a label. The dot is **green** for SSH sessions and dim for local shells. If the profile has a **Colour** set, the dot uses that colour instead. If the profile has an icon, the dot is hidden and the icon itself is tinted green or dim instead. When a background tab receives new output, its dot turns **amber** and the entire tab label flashes until you switch to it or click one of its panes.
 
 For a plain tab the label follows the terminal title reported by your shell (usually the current directory). For a profile tab the label is set by the profile:
 
@@ -166,6 +166,50 @@ You can customise any profile's label with a **Classifier title** in the profile
 Any key from the profile's `options` can also be used as a token.
 
 **Example:** classifier title `Lab — @host` on an SSH profile with host `cadfael.local` produces `Lab — cadfael.local`.
+
+---
+
+## Background notifications
+
+When ttyga's window is not focused and a background tab produces output, ttyga fires a desktop notification via `notify-send` (requires `libnotify-bin`). The notification body shows a description of the active session — for SSH profiles this is `user@host`; for clippet profiles it is the profile name. You can override this with a **Notification text** field in the profile editor; the custom text is stored as `notify_text` in `profiles.yaml`.
+
+Each background tab fires at most one notification per episode (from when the window lost focus until it regains it or you switch to that tab). When the window regains focus all pending notifications are cleared.
+
+The launcher icon in the dock shows a badge count equal to the number of background tabs with unseen activity. The badge clears automatically when you switch to a tab or the window regains focus.
+
+### Claude Code notification hook
+
+Claude Code (the CLI) can fire its own notifications when it finishes a task or needs input. To wire these through to the desktop, add a `Notification` hook in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "/home/greg/.local/bin/ttyga-claude-notify"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Create the hook script at `~/.local/bin/ttyga-claude-notify`:
+
+```python
+#!/usr/bin/env python3
+import json, subprocess, sys
+d = json.load(sys.stdin)
+title = d.get('title', 'Claude Code')
+message = d.get('message', '')
+subprocess.run(['notify-send', '-a', 'ttyga', title, message], check=False)
+```
+
+Make it executable: `chmod +x ~/.local/bin/ttyga-claude-notify`.
+
+This hook fires independently of ttyga's own activity detection — it works even when the terminal is in the foreground.
 
 ---
 

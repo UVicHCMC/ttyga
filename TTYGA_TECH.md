@@ -129,8 +129,9 @@ After editing by hand, press **Ctrl+Alt+R** to reload without restarting.
 | `classifier` | no | Controls the tab label |
 | `extends` | no | Name of another profile to inherit from — see *Profile inheritance* below |
 | `hidden` | no | `true` to hide this profile from the sidebar (useful for base profiles) |
-| `shell_below` | no | `true` to open the profile's command in the top pane with a plain shell below it — a quick alternative to writing a full `layout:` tree; ignored when `layout:` is present |
+| `shell_split` | no | `below` to open a plain shell below the command pane; `beside` for a shell to the right — a quick alternative to writing a full `layout:` tree; ignored when `layout:` is present |
 | `layout` | no | Multi-pane split tree opened on click — see *Profile layouts* below |
+| `notify_text` | no | Custom notification body shown when this tab has background activity while the window is unfocused. Overrides the default body (SSH: `user@host`; clippet: profile name). |
 
 ### SSH profiles
 
@@ -225,13 +226,13 @@ Pastes a shell command into the terminal. With `auto_execute: true` a newline is
   type: clippet
   group: Projects
   cwd: ~/projects/mytool
-  shell_below: true
+  shell_split: below
   options:
     command: mytool serve
     auto_execute: true
 ```
 
-Clicking this profile opens a vertically split tab: `mytool serve` running in the top pane, a plain shell in the bottom pane (in the same `cwd`). Toggle **Shell below** in the profile editor instead of writing this by hand. A `layout:` key always takes precedence over `shell_below`.
+Clicking this profile opens a vertically split tab: `mytool serve` running in the top pane, a plain shell in the bottom pane (in the same `cwd`). Use `shell_split: beside` instead for a horizontal split. Set **Shell split** in the profile editor instead of writing this by hand. A `layout:` key always takes precedence over `shell_split`.
 
 **Multi-line commands** use YAML block scalar syntax:
 
@@ -412,7 +413,69 @@ Clicking this profile opens one tab with three panes: vim on the left, make watc
 Notes:
 - Layout panes always run locally, regardless of the profile's `type`. The base profile provides appearance (font, colour scheme, env vars) but not the connection type.
 - The profile editor does not have a UI for `layout:` — edit the YAML by hand and press **Ctrl+Alt+R** to reload.
-- For the common case of a command pane with a plain shell below it, use `shell_below: true` instead — it is toggleable in the profile editor and requires no hand-written layout tree.
+- For the common case of a command pane with a plain shell below or beside it, use `shell_split: below` or `shell_split: beside` instead — both are selectable in the profile editor and require no hand-written layout tree.
+
+---
+
+## Background notifications
+
+When ttyga's window loses OS focus, background terminal activity triggers desktop notifications and launcher badge updates.
+
+### Activity detection
+
+ttyga listens to the VTE `contents-changed` signal on every terminal. When a terminal produces output and:
+
+1. the window is not the active window (`notify::is-active` on `Gtk.Window`), and
+2. that terminal's tab has not already sent a notification in the current episode,
+
+ttyga calls `notify-send -a ttyga 'ttyga' <body>` (requires `libnotify-bin`). The `<body>` is:
+
+- the value of `notify_text` from the profile, if set;
+- otherwise, for SSH profiles: `user@host`;
+- otherwise, for clippet profiles: the profile name;
+- otherwise: the tab label text.
+
+Each tab fires at most one notification per episode. An episode ends when the window regains focus or you switch to / focus that tab.
+
+### Launcher badge
+
+A Unity/GNOME dock badge (integer count of pending tabs) is updated via the `com.canonical.Unity.LauncherEntry` D-Bus signal on `application://ca.greg.ttyga.desktop`. The badge is cleared when the window regains focus.
+
+### Tab flash animation
+
+When a background tab receives output, its tab label box gains the CSS class `tab-activity`, which applies a `@keyframes tab-flash` animation that pulses the label background using the theme's warning colour at 0.28 opacity. The class is removed when you switch to the tab or focus a terminal in it.
+
+### Claude Code notification hook
+
+Claude Code fires a `Notification` hook event when it needs user input or finishes a task. Wire it to `notify-send` by adding to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "/home/greg/.local/bin/ttyga-claude-notify"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook script receives a JSON object on stdin with `title` and `message` fields. A minimal implementation:
+
+```python
+#!/usr/bin/env python3
+import json, subprocess, sys
+d = json.load(sys.stdin)
+subprocess.run(
+    ['notify-send', '-a', 'ttyga', d.get('title', 'Claude Code'), d.get('message', '')],
+    check=False)
+```
+
+This hook fires independently of ttyga's own activity detection — it works even when the terminal is in the foreground.
 
 ---
 
@@ -436,6 +499,7 @@ The right panel form fields:
 | **Host / User / Port** | SSH fields; **From SSH config…** populates from `~/.ssh/config` |
 | **Command / Auto-execute / Run in current tab / Shell below** | Clippet fields |
 | **Classifier title** | Optional tab label template with `@` tokens |
+| **Notification text** | Optional body for desktop notifications when this tab is active in the background; stored as `notify_text` |
 | **Working dir** | `cwd` override for the spawned shell |
 | **Environment** | `KEY=value` lines, one per line; merged with the inherited environment |
 | **tmux** | Toggle + session name; wraps the command in `tmux attach -t <name> \|\| tmux new -s <name>` |

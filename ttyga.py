@@ -20,6 +20,7 @@ import copy
 import gi
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import yaml
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.8"
+APP_VERSION = "0.6.16"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -481,6 +482,15 @@ notebook > header.top > tabs {{
 .tab-dot-ssh      {{ color: {ssh_color or ('#2ec27e' if theme == 'light' else '#57e389' if theme == 'dark' else '#a3d977')}; }}
 .tab-dot-local    {{ color: {t['fg_dim']}; }}
 .tab-dot-activity {{ color: {t['term_warn']}; }}
+@keyframes tab-flash {{
+    0%   {{ background-color: transparent; }}
+    50%  {{ background-color: rgba({int(t['term_warn'][1:3],16)},{int(t['term_warn'][3:5],16)},{int(t['term_warn'][5:7],16)},0.28); }}
+    100% {{ background-color: transparent; }}
+}}
+.tab-activity {{
+    animation: tab-flash 1.2s ease-in-out infinite;
+    border-radius: 4px;
+}}
 
 /* Editor list ------------------------------------------------------------- */
 
@@ -536,8 +546,8 @@ paned > separator:hover {{
 .pane-bar {{
     background: {t['bg_headerbar']};
     border-bottom: 1px solid {t['border']};
-    min-height: 22px;
-    padding: 0 4px;
+    min-height: 24px;
+    padding: 4px 4px 2px 4px;
 }}
 .pane-bar label {{
     font-size: 9pt;
@@ -994,14 +1004,14 @@ class EditorWindow(Adw.Window):
         self.in_place_switch.set_halign(Gtk.Align.START)
         self.in_place_switch.set_valign(Gtk.Align.CENTER)
 
-        self.shell_below_switch = Gtk.Switch()
-        self.shell_below_switch.set_halign(Gtk.Align.START)
-        self.shell_below_switch.set_valign(Gtk.Align.CENTER)
+        shell_split_model = Gtk.StringList.new(["Off", "Below", "Beside"])
+        self.shell_split_drop = Gtk.DropDown(model=shell_split_model)
+        self.shell_split_drop.set_halign(Gtk.Align.START)
 
         self._attach(clip_grid, 0, "Command",          cmd_scroll)
         self._attach(clip_grid, 1, "Auto-execute",     self.auto_exec_switch)
         self._attach(clip_grid, 2, "Run in current tab", self.in_place_switch)
-        self._attach(clip_grid, 3, "Shell below",      self.shell_below_switch)
+        self._attach(clip_grid, 3, "Shell split",      self.shell_split_drop)
         self.stack.add_named(clip_grid, "clippet")
         self.form_box.append(self.stack)
 
@@ -1047,6 +1057,10 @@ class EditorWindow(Adw.Window):
         tmux_box.append(self.tmux_switch)
         tmux_box.append(self.tmux_session_entry)
         self._attach(launch_grid, 2, "tmux", tmux_box)
+
+        self.notify_text_entry = Gtk.Entry()
+        self.notify_text_entry.set_placeholder_text("e.g. Claude is waiting  (optional)")
+        self._attach(launch_grid, 3, "Notification text", self.notify_text_entry)
 
         self.form_box.append(launch_grid)
 
@@ -1351,12 +1365,13 @@ class EditorWindow(Adw.Window):
         self.command_view.get_buffer().set_text(opts.get('command', ''))
         self.auto_exec_switch.set_active(opts.get('auto_execute', False))
         self.in_place_switch.set_active(opts.get('in_place', False))
-        self.shell_below_switch.set_active(p.get('shell_below', False))
+        self.shell_split_drop.set_selected({'below': 1, 'beside': 2}.get(p.get('shell_split', ''), 0))
 
         classifier = p.get('classifier') or {}
         self.classifier_entry.set_text(classifier.get('title', ''))
 
         self.cwd_entry.set_text(p.get('cwd', ''))
+        self.notify_text_entry.set_text(p.get('notify_text', ''))
         env_dict = p.get('env') or {}
         env_text = '\n'.join(f'{k}={v}' for k, v in env_dict.items())
         self.env_view.get_buffer().set_text(env_text)
@@ -1414,10 +1429,11 @@ class EditorWindow(Adw.Window):
                 'auto_execute': self.auto_exec_switch.get_active(),
                 'in_place':     self.in_place_switch.get_active(),
             }
-            if self.shell_below_switch.get_active():
-                p['shell_below'] = True
+            split_val = {1: 'below', 2: 'beside'}.get(self.shell_split_drop.get_selected())
+            if split_val:
+                p['shell_split'] = split_val
             else:
-                p.pop('shell_below', None)
+                p.pop('shell_split', None)
 
         title = self.classifier_entry.get_text().strip()
         if title:
@@ -1430,6 +1446,12 @@ class EditorWindow(Adw.Window):
             p['cwd'] = cwd
         else:
             p.pop('cwd', None)
+
+        notify_text = self.notify_text_entry.get_text().strip()
+        if notify_text:
+            p['notify_text'] = notify_text
+        else:
+            p.pop('notify_text', None)
 
         buf = self.env_view.get_buffer()
         env_text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
@@ -2015,6 +2037,8 @@ class DevFrame(Adw.Application):
         self._font_zoom_delta   = 0      # ephemeral pt offset from saved font size
         self._var_history       = {}     # {history_key: {var_name: last_value}}
         self._active_terminal   = None   # Vte.Terminal with keyboard focus
+        self._window_active     = True   # tracks whether the ttyga window has OS focus
+        self._notified_roots    = set()  # tab_roots already notified this episode
 
     # ----- config / settings / state I/O -----------------------------------
 
@@ -2022,9 +2046,13 @@ class DevFrame(Adw.Application):
         for path in (CONFIG_FILE, LEGACY_CONFIG):
             try:
                 with open(path, 'r') as f:
-                    return yaml.safe_load(f) or {}
+                    config = yaml.safe_load(f) or {}
             except FileNotFoundError:
                 continue
+            for p in config.get('profiles', []):
+                if p.pop('shell_below', False) and 'shell_split' not in p:
+                    p['shell_split'] = 'below'
+            return config
         return {"profiles": []}
 
     def load_resolved_config(self):
@@ -2489,6 +2517,7 @@ class DevFrame(Adw.Application):
         if state.get('window_maximized', False):
             self.window.maximize()
         self.window.connect("close-request", self.save_state)
+        self.window.connect("notify::is-active", self._on_window_active_changed)
 
         # Capture-phase key handler so Ctrl+T / Ctrl+Alt+R aren't swallowed
         # by the terminal child.
@@ -3052,10 +3081,15 @@ class DevFrame(Adw.Application):
             term = self._first_terminal_in(tab_root)
             self._active_terminal = term
 
-        # Clear the activity indicator for the tab we just switched to.
+        # Clear the activity indicator and notification state for the tab we just switched to.
         dot = self.tabs.get(term, {}).get('dot') if term else None
         if dot:
             dot.remove_css_class('tab-dot-activity')
+            tab_box = dot.get_parent()
+            if tab_box:
+                tab_box.remove_css_class('tab-activity')
+        self._notified_roots.discard(tab_root)
+        self._update_launcher_badge(len(self._notified_roots))
 
         profile = self.tabs.get(term, {}).get('profile') if term else None
         key = (profile.get('name'), profile.get('group', 'General')) if profile else None
@@ -3076,23 +3110,82 @@ class DevFrame(Adw.Application):
     def _on_terminal_focus(self, terminal, _param):
         if terminal.has_focus():
             self._active_terminal = terminal
-            dot = self.tabs.get(terminal, {}).get('dot')
+            meta = self.tabs.get(terminal, {})
+            dot = meta.get('dot')
             if dot:
                 dot.remove_css_class('tab-dot-activity')
+                tab_box = dot.get_parent()
+                if tab_box:
+                    tab_box.remove_css_class('tab-activity')
+            self._notified_roots.discard(meta.get('tab_root'))
+            self._update_launcher_badge(len(self._notified_roots))
 
     def _on_terminal_activity(self, terminal):
-        """Add an activity indicator to a tab's dot when output arrives while unfocused."""
+        """Flag background-tab activity: update the dot and fire a desktop notification."""
         meta = self.tabs.get(terminal)
         if not meta:
             return
         # Only flag background tabs — not the one currently on screen.
         current = self.notebook.get_current_page()
         current_root = self.notebook.get_nth_page(current) if current >= 0 else None
-        if meta.get('tab_root') is current_root:
+        tab_root = meta.get('tab_root')
+        if tab_root is current_root:
             return
         dot = meta.get('dot')
         if dot and not dot.has_css_class('tab-dot-activity'):
             dot.add_css_class('tab-dot-activity')
+            tab_box = dot.get_parent()
+            if tab_box:
+                tab_box.add_css_class('tab-activity')
+        # Desktop notification: once per episode, only when window is in the background.
+        if not self._window_active and tab_root not in self._notified_roots:
+            self._notified_roots.add(tab_root)
+            self._notify_tab(meta)
+            self._update_launcher_badge(len(self._notified_roots))
+
+    def _on_window_active_changed(self, window, _param):
+        self._window_active = window.is_active()
+        if self._window_active:
+            self._notified_roots.clear()
+            self._update_launcher_badge(0)
+
+    def _update_launcher_badge(self, count):
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            props = {
+                'count':         GLib.Variant('x', count),
+                'count-visible': GLib.Variant('b', count > 0),
+            }
+            bus.emit_signal(
+                None,
+                '/com/canonical/Unity/LauncherEntry',
+                'com.canonical.Unity.LauncherEntry',
+                'Update',
+                GLib.Variant('(sa{sv})', ('application://ca.greg.ttyga.desktop', props)))
+        except Exception:
+            pass
+
+    def _notify_tab(self, meta):
+        """Fire a desktop notification for background activity in this tab."""
+        profile = meta.get('profile')
+        if profile and profile.get('notify_text'):
+            body = profile['notify_text']
+        elif profile:
+            if meta.get('kind') == 'ssh':
+                opts = profile.get('options', {})
+                user = opts.get('user', '').strip()
+                host = opts.get('host', '').strip()
+                body = f"{user}@{host}" if user else host
+            else:
+                body = profile.get('name') or meta['label'].get_text()
+        else:
+            body = meta['label'].get_text() or 'Terminal'
+        try:
+            subprocess.Popen(
+                ['notify-send', '-a', 'ttyga', 'ttyga', body],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            pass
 
     def _on_terminal_title_changed(self, terminal):
         title = terminal.get_window_title()
@@ -3215,16 +3308,19 @@ class DevFrame(Adw.Application):
         p_env = profile.get('env', {}) if profile else {}
         rv    = resolved_vars or {}
 
-        # --- Shell-below shorthand: synthesise a vertical split on the fly -----
-        if (profile and profile.get('shell_below') and not profile.get('layout')
+        # --- Shell-split shorthand: synthesise a split layout on the fly -------
+        _shell_split = profile.get('shell_split') if profile else None
+        if (_shell_split and not profile.get('layout')
                 and profile.get('type', 'clippet') != 'ssh'):
             _opts = profile.get('options', {})
             _cmd  = _apply_vars(_opts.get('command', ''), rv)
+            _shell_cwd = p_cwd or cwd or _implied_cwd(_cmd) or ''
+            _axis = 'horizontal' if _shell_split == 'beside' else 'vertical'
             profile = dict(profile, layout={
-                'split': 'vertical',
-                'start': {'command': _cmd, 'cwd': p_cwd or '',
+                'split': _axis,
+                'start': {'command': _cmd, 'cwd': _shell_cwd,
                           'auto_execute': _opts.get('auto_execute', False)},
-                'end': {},
+                'end': {'cwd': _shell_cwd},
             })
 
         # --- Layout path: profile defines a multi-pane tree --------------------
@@ -3244,7 +3340,7 @@ class DevFrame(Adw.Application):
             tab_root.set_vexpand(True)
             content = self._build_profile_layout(
                 profile['layout'], tab_root, tab_label, dot,
-                profile, str(Path(p_cwd).expanduser()) if p_cwd else None,
+                profile, str(Path(p_cwd or cwd).expanduser()) if (p_cwd or cwd) else None,
                 p_env or None)
             tab_root.append(content)
             self._update_pane_bars(tab_root)
