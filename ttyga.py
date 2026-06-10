@@ -32,15 +32,16 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Vte', '3.91')
 gi.require_version('Gdk', '4.0')
 gi.require_version('Adw', '1')
+gi.require_version('GdkPixbuf', '2.0')
 
-from gi.repository import Gtk, Vte, GLib, Gdk, Gio, GObject, Adw, Pango
+from gi.repository import Gtk, Vte, GLib, Gdk, Gio, GObject, Adw, Pango, GdkPixbuf
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.16"
+APP_VERSION = "0.6.17"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -57,7 +58,8 @@ CONFIG_DIR    = Path(GLib.get_user_config_dir()) / APP_NAME
 CONFIG_FILE   = CONFIG_DIR / "profiles.yaml"
 SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
 STATE_FILE    = CONFIG_DIR / "app_state.json"
-LEGACY_CONFIG = Path(__file__).parent / "profiles.yaml"
+LEGACY_CONFIG    = Path(__file__).parent / "profiles.yaml"
+MONO_ICON_NAME   = "ttyga_mono.svg"
 
 # These will be overridden by settings in ~/.config/ttyga/settings.yaml
 DEFAULT_SETTINGS = {
@@ -68,8 +70,7 @@ DEFAULT_SETTINGS = {
     'scroll_speed':      3,             # lines per wheel tick (1–10)
     'copy_on_selection': True,
     'restore_tabs':      True,
-    'welcome_image':     '',          # path to PNG/SVG; empty = app icon
-    'welcome_blurb':     'Your terminals, organised.',
+    'welcome_image':     '',          # path to PNG/SVG; empty = monochrome icon
     'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
 }
 
@@ -579,8 +580,19 @@ popover > contents button.flat:hover {{
 /* Welcome screen ---------------------------------------------------------- */
 
 .welcome-title {{
-    font-size: 2em;
-    font-weight: 700;
+    font-size: 1.6em;
+    font-weight: 800;
+}}
+
+.welcome-bullet {{
+    font-size: 0.95em;
+    color: {t['fg_dim']};
+}}
+
+.welcome-hint {{
+    font-size: 0.95em;
+    color: {t['fg_dim']};
+    font-style: italic;
 }}
 """
 
@@ -2653,49 +2665,73 @@ class DevFrame(Adw.Application):
         self.split_view.set_content(self.content_stack)
 
     def _build_welcome_screen(self):
-        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         inner.set_hexpand(True)
         inner.set_vexpand(True)
         inner.set_halign(Gtk.Align.CENTER)
         inner.set_valign(Gtk.Align.CENTER)
 
-        image_path = self.settings.get('welcome_image', '')
         img = Gtk.Image()
-        img.set_pixel_size(96)
-        if image_path and Path(image_path).is_file():
-            img.set_from_file(image_path)
-        else:
+        icon_path = self._resolve_welcome_icon()
+        loaded = False
+        if icon_path is not None:
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 96, 96)
+                texture = Gdk.Texture.new_for_pixbuf(pb)
+                img.set_from_paintable(texture)
+                loaded = True
+            except Exception:
+                pass
+        if not loaded:
+            img.set_pixel_size(96)
             img.set_from_icon_name(APP_ID)
         img.add_css_class('welcome-logo')
+        img.set_margin_bottom(6)
         inner.append(img)
 
-        title_lbl = Gtk.Label(label=APP_NAME)
+        title_lbl = Gtk.Label(label="Open or Start a Terminal")
         title_lbl.add_css_class('welcome-title')
         inner.append(title_lbl)
 
-        blurb = self.settings.get('welcome_blurb', '')
-        if blurb:
-            blurb_lbl = Gtk.Label(label=blurb)
-            blurb_lbl.add_css_class('welcome-blurb')
-            blurb_lbl.add_css_class('dim-label')
-            inner.append(blurb_lbl)
+        bullets = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        bullets.set_halign(Gtk.Align.CENTER)
+        bullets.set_margin_top(10)
+        for text in (
+            "Press Ctrl+Shift+T to open a new tab",
+            "Press Ctrl+Shift+E to split the pane side by side",
+            "Press Ctrl+Shift+D to split the pane top and bottom",
+            "Press Ctrl+Shift+B to toggle the sidebar",
+        ):
+            lbl = Gtk.Label(label=f"•  {text}")
+            lbl.set_halign(Gtk.Align.START)
+            lbl.set_xalign(0.0)
+            lbl.add_css_class('welcome-bullet')
+            lbl.add_css_class('dim-label')
+            bullets.append(lbl)
+        inner.append(bullets)
 
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_row.set_halign(Gtk.Align.CENTER)
-        btn_row.set_margin_top(8)
-
-        new_tab_btn = Gtk.Button(label="Open new tab")
-        new_tab_btn.add_css_class('suggested-action')
-        new_tab_btn.connect('clicked', lambda _: self.add_tab())
-        btn_row.append(new_tab_btn)
-
-        help_btn = Gtk.Button(label="Help")
-        help_btn.connect('clicked', self._open_help)
-        btn_row.append(help_btn)
-
-        inner.append(btn_row)
+        hint_lbl = Gtk.Label(label="Or, press Ctrl+Q to quit ttyga.")
+        hint_lbl.set_margin_top(14)
+        hint_lbl.add_css_class('welcome-hint')
+        hint_lbl.add_css_class('dim-label')
+        inner.append(hint_lbl)
 
         return inner
+
+    def _resolve_welcome_icon(self):
+        """Locate the monochrome welcome icon. Resolution order:
+           1. settings['welcome_image'] if set and the file exists
+           2. ttyga_mono.svg next to this script (project / installed location)
+           3. ttyga_mono.svg under ~/.config/ttyga/
+           Returns a Path, or None to fall back to the themed app icon."""
+        override = self.settings.get('welcome_image', '')
+        if override and Path(override).is_file():
+            return Path(override)
+        for cand in (Path(__file__).parent / MONO_ICON_NAME,
+                     CONFIG_DIR / MONO_ICON_NAME):
+            if cand.is_file():
+                return cand
+        return None
 
     def _show_welcome(self):
         self.content_stack.set_visible_child_name('welcome')

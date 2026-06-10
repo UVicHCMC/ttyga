@@ -47,6 +47,7 @@ if "$UNINSTALL"; then
     done
     run rm -f "$ICONS_BASE/scalable/apps/ca.greg.ttyga.svg"
     run rm -f "$ICONS_BASE/scalable/apps/ttyga-watermark.svg"
+    run rm -f "$CONFIG_DIR/ttyga_mono.svg"
     run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-horiz-symbolic.svg"
     run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
     run update-desktop-database "$APPS_DIR" 2>/dev/null || true
@@ -79,6 +80,9 @@ run mkdir -p "$BIN_DIR" "$APPS_DIR" "$DATA_DIR" "$CONFIG_DIR"
 run install -m 755 "$SCRIPT_DIR/ttyga.py"       "$BIN_DIR/ttyga"
 run install -m 644 "$SCRIPT_DIR/TTYGA.md"       "$DATA_DIR/TTYGA.md"
 run install -m 644 "$SCRIPT_DIR/TTYGA_TECH.md"  "$DATA_DIR/TTYGA_TECH.md"
+
+# Monochrome welcome icon — always update (not user data).
+run install -m 644 "$SCRIPT_DIR/ttyga_mono.svg" "$CONFIG_DIR/ttyga_mono.svg"
 
 # Seed profiles.yaml on first install only — never overwrite user data.
 if "$DRY_RUN" || [ ! -f "$CONFIG_DIR/profiles.yaml" ]; then
