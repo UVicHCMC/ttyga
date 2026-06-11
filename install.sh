@@ -117,6 +117,9 @@ run install -m 644 \
 run install -m 644 \
     "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-vert-symbolic.svg" \
     "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
+run install -m 644 \
+    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-quad-symbolic.svg" \
+    "$ICONS_BASE/scalable/actions/ttyga-split-quad-symbolic.svg"
 
 if ! "$DRY_RUN"; then
     cat > "$APPS_DIR/ca.greg.ttyga.desktop" <<'EOF'

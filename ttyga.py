@@ -6,7 +6,7 @@ ttyga — GTK4 + Vte + libadwaita terminal with a profile sidebar.
 Single-file Adw.Application that hosts a Gtk.Notebook of Vte.Terminal widgets
 beside an Adw.OverlaySplitView sidebar populated from profiles.yaml. The
 headerbar carries a UserBadge reflecting the active connection, plus
-edit-profiles / sidebar-toggle / new-tab / menu buttons. A Preferences window
+edit-profiles / sidebar-toggle / new-tab / split-pane / menu buttons. A Preferences window
 controls colour scheme, sidebar layout, font, scrollback, and a few terminal
 toggles.
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.17"
+APP_VERSION = "0.6.18"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2645,12 +2645,6 @@ class DevFrame(Adw.Application):
         split_v_btn.connect("clicked", lambda _: self._split_pane(Gtk.Orientation.VERTICAL))
         tab_actions.append(split_v_btn)
 
-        new_tab_btn = Gtk.Button(icon_name='list-add-symbolic')
-        new_tab_btn.add_css_class('flat')
-        new_tab_btn.set_tooltip_text("New tab (Ctrl+Shift+T)")
-        new_tab_btn.connect("clicked", lambda _: self.add_tab())
-        tab_actions.append(new_tab_btn)
-
         self.notebook.set_action_widget(tab_actions, Gtk.PackType.END)
 
         # Stack switches between the welcome screen and the notebook.
@@ -2671,19 +2665,21 @@ class DevFrame(Adw.Application):
         inner.set_halign(Gtk.Align.CENTER)
         inner.set_valign(Gtk.Align.CENTER)
 
+        icon_px = 128
         img = Gtk.Image()
         icon_path = self._resolve_welcome_icon()
         loaded = False
         if icon_path is not None:
             try:
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 96, 96)
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), icon_px, icon_px)
                 texture = Gdk.Texture.new_for_pixbuf(pb)
                 img.set_from_paintable(texture)
+                img.set_size_request(icon_px, icon_px)
                 loaded = True
             except Exception:
                 pass
         if not loaded:
-            img.set_pixel_size(96)
+            img.set_pixel_size(icon_px)
             img.set_from_icon_name(APP_ID)
         img.add_css_class('welcome-logo')
         img.set_margin_bottom(6)
@@ -2696,17 +2692,19 @@ class DevFrame(Adw.Application):
         bullets = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bullets.set_halign(Gtk.Align.CENTER)
         bullets.set_margin_top(10)
-        for text in (
-            "Press Ctrl+Shift+T to open a new tab",
-            "Press Ctrl+Shift+E to split the pane side by side",
-            "Press Ctrl+Shift+D to split the pane top and bottom",
-            "Press Ctrl+Shift+B to toggle the sidebar",
+        for markup in (
+            'Press Ctrl+Shift+T to <a href="new-tab">open a new tab</a>',
+            'Press Ctrl+Shift+E to <a href="split-beside">split the pane side by side</a>',
+            'Press Ctrl+Shift+D to <a href="split-below">split the pane top and bottom</a>',
+            'Press Ctrl+Shift+B to <a href="toggle-sidebar">toggle the sidebar</a>',
         ):
-            lbl = Gtk.Label(label=f"•  {text}")
+            lbl = Gtk.Label(label=f"•  {markup}")
+            lbl.set_use_markup(True)
             lbl.set_halign(Gtk.Align.START)
             lbl.set_xalign(0.0)
             lbl.add_css_class('welcome-bullet')
             lbl.add_css_class('dim-label')
+            lbl.connect('activate-link', self._on_welcome_link)
             bullets.append(lbl)
         inner.append(bullets)
 
@@ -2733,6 +2731,17 @@ class DevFrame(Adw.Application):
                 return cand
         return None
 
+    def _on_welcome_link(self, _label, uri):
+        if uri == 'new-tab':
+            self.add_tab()
+        elif uri == 'split-beside':
+            self._split_pane(Gtk.Orientation.HORIZONTAL)
+        elif uri == 'split-below':
+            self._split_pane(Gtk.Orientation.VERTICAL)
+        elif uri == 'toggle-sidebar':
+            self.split_view.set_show_sidebar(not self.split_view.get_show_sidebar())
+        return True
+
     def _show_welcome(self):
         self.content_stack.set_visible_child_name('welcome')
 
@@ -2749,6 +2758,54 @@ class DevFrame(Adw.Application):
         self._sidebar_toggle_btn.set_tooltip_text("Toggle sidebar (Ctrl+Shift+B)")
         self._sidebar_toggle_btn.connect('toggled', self._on_sidebar_toggle)
         header.pack_start(self._sidebar_toggle_btn)
+
+        new_tab_btn = Gtk.Button()
+        new_tab_btn.set_icon_name('tab-new-symbolic')
+        new_tab_btn.add_css_class('flat')
+        new_tab_btn.set_tooltip_text("New tab (Ctrl+Shift+T)")
+        new_tab_btn.connect('clicked', self.add_tab)
+        header.pack_start(new_tab_btn)
+
+        _title = f"{_LOCAL_USER}@{_LOCAL_HOST}"
+        split_popover = Gtk.Popover()
+        split_popover.add_css_class('menu')
+        split_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        split_box.set_margin_top(4)
+        split_box.set_margin_bottom(4)
+        split_box.set_margin_start(4)
+        split_box.set_margin_end(4)
+        for _label, _icon, layout in (
+            ("Side by side",   "ttyga-split-horiz-symbolic",
+             {'split': 'horizontal', 'start': {}, 'end': {}}),
+            ("Top and bottom", "ttyga-split-vert-symbolic",
+             {'split': 'vertical', 'start': {}, 'end': {}}),
+            ("2×2 grid",       "ttyga-split-quad-symbolic",
+             {'split': 'horizontal',
+              'start': {'split': 'vertical', 'start': {}, 'end': {}},
+              'end':   {'split': 'vertical', 'start': {}, 'end': {}}}),
+        ):
+            row = Gtk.Button()
+            row.add_css_class('flat')
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box.set_margin_start(4)
+            row_box.set_margin_end(8)
+            icon = Gtk.Image.new_from_icon_name(_icon)
+            icon.set_pixel_size(16)
+            row_box.append(icon)
+            row_box.append(Gtk.Label(label=_label))
+            row.set_child(row_box)
+            row.connect('clicked', lambda _, l=layout, t=_title:
+                        (split_popover.popdown(),
+                         self.add_tab(profile={'name': t, 'layout': l})))
+            split_box.append(row)
+        split_popover.set_child(split_box)
+
+        split_btn = Gtk.MenuButton()
+        split_btn.set_icon_name('go-down-symbolic')
+        split_btn.add_css_class('flat')
+        split_btn.set_tooltip_text("New split tab")
+        split_btn.set_popover(split_popover)
+        header.pack_start(split_btn)
 
         # Trailing: open-in split-button + menu
         open_menu = Gio.Menu()
