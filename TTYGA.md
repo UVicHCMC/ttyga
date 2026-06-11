@@ -6,9 +6,9 @@ ttyga is a terminal launcher for GNOME. Instead of hunting through your shell hi
 
 ## Your first tab
 
-When ttyga opens you will see the welcome screen. Click **Open new tab** (or press **Ctrl+T**) to open a plain bash terminal. From here it works like any terminal — type commands, press Enter, get output.
+When ttyga opens you will see the welcome screen. The bullet points on the screen are clickable — click one to perform that action directly. Click **open a new tab** (or press **Ctrl+Shift+T**) to open a plain bash terminal. From here it works like any terminal — type commands, press Enter, get output.
 
-To open more tabs use **Ctrl+T** or the **+** button next to the tab bar. Switch between tabs with **Ctrl+Tab** and **Ctrl+Shift+Tab**, or click the tab label. Close a tab with **Ctrl+W**; when the last tab closes you return to the welcome screen.
+To open more tabs use **Ctrl+Shift+T** or the new-tab button (tab icon) in the header bar. Switch between tabs with **Ctrl+Tab** and **Ctrl+Shift+Tab**, or click the tab label. Close a tab with **Ctrl+W**; when the last tab closes you return to the welcome screen.
 
 ---
 
@@ -215,7 +215,9 @@ This hook fires independently of ttyga's own activity detection — it works eve
 
 ## Split panes
 
-Each tab can be split into multiple panes, each running its own shell. The two split buttons in the tab bar (next to the **+** button) split the focused pane side-by-side or top/bottom with a single click.
+Each tab can be split into multiple panes, each running its own shell. The two split buttons next to the tab bar split the focused pane side-by-side or top/bottom with a single click.
+
+To open a new tab that is already split, use the **↓** (down-arrow) dropdown button in the header bar beside the new-tab button. It offers three layouts — side by side, top and bottom, and a 2×2 grid — each opening as a fresh tab with plain local shells.
 
 | Shortcut | Action |
 |---|---|
@@ -280,7 +282,7 @@ Open via the hamburger menu → **Preferences**.
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+T | New tab |
+| Ctrl+Shift+T | New tab |
 | Ctrl+W | Close current tab |
 | Ctrl+Tab | Next tab |
 | Ctrl+Shift+Tab | Previous tab |

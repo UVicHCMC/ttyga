@@ -39,7 +39,25 @@ def render_png(svg_path: Path, out_path: Path, size: int, dry_run: bool):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate GNOME application icons from an SVG."
+        description="Generate GNOME application icons from an SVG.",
+        epilog="""
+examples:
+  # Build a full icon set for ttyga (output under ttyga-icon-theme/)
+  python3 build_icons.py ttyga.svg -n ca.greg.ttyga -o ttyga-icon-theme
+
+  # Preview without writing anything
+  python3 build_icons.py ttyga.svg -n ca.greg.ttyga -o ttyga-icon-theme --dry-run
+
+  # Build with a custom output directory
+  python3 build_icons.py myapp.svg -n com.example.myapp -o /tmp/icons
+
+The script strips width/height from the root <svg> tag so rsvg-convert
+scales cleanly from the viewBox.  Output layout follows the XDG hicolor
+theme structure:  <output>/hicolor/{scalable,16x16,24x24,...}/apps/
+
+Requires: librsvg2-bin  (sudo apt install librsvg2-bin)
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("svg", help="Source SVG file")
     parser.add_argument("-n", "--name", default="app",

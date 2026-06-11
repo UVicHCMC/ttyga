@@ -64,11 +64,11 @@ The directory and files are created automatically on first run. `app_state.json`
 | Control | Action |
 |---|---|
 | Sidebar icon (left) | Toggle the sidebar (Ctrl+Shift+B) |
+| New tab button (left) | Open a plain terminal tab (Ctrl+Shift+T) |
+| Split dropdown ↓ (left) | Open a new tab with a pre-built layout: side by side, top and bottom, or 2×2 grid |
 | Pencil icon (right) | Open the profile editor |
 | Open-in split button (right) | Open working directory in Nautilus (primary) or VS Code (dropdown) |
 | Hamburger menu (right) | Preferences, keyboard shortcuts, help, about |
-
-The **+** button next to the tab bar opens a new terminal tab.
 
 ### Sidebar
 
@@ -556,7 +556,7 @@ Welcome screen appearance can be set directly in `settings.yaml`:
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+T | New tab |
+| Ctrl+Shift+T | New tab |
 | Ctrl+W | Close active pane (closes tab if last pane) |
 | Ctrl+Tab | Next tab |
 | Ctrl+Shift+Tab | Previous tab |
