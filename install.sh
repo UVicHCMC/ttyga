@@ -9,8 +9,6 @@ DATA_DIR="$HOME/.local/share/ttyga"
 CONFIG_DIR="$HOME/.config/ttyga"
 ICONS_BASE="$HOME/.local/share/icons/hicolor"
 
-ICON_SIZES="16x16 24x24 32x32 48x48 64x64 128x128 256x256 512x512"
-
 DRY_RUN=false
 UNINSTALL=false
 
@@ -42,14 +40,10 @@ if "$UNINSTALL"; then
     run rm -f "$DATA_DIR/TTYGA.md"
     run rm -f "$DATA_DIR/TTYGA_TECH.md"
     run rmdir "$DATA_DIR" 2>/dev/null || true
-    for size in $ICON_SIZES; do
-        run rm -f "$ICONS_BASE/$size/apps/ca.greg.ttyga.png"
-    done
-    run rm -f "$ICONS_BASE/scalable/apps/ca.greg.ttyga.svg"
-    run rm -f "$ICONS_BASE/scalable/apps/ttyga-watermark.svg"
-    run rm -f "$CONFIG_DIR/ttyga_mono.svg"
-    run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-horiz-symbolic.svg"
-    run rm -f "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
+    # Mirror the install: remove every icon the source theme provides.
+    while IFS= read -r -d '' src; do
+        run rm -f "$ICONS_BASE/${src#"$SCRIPT_DIR/ttyga-icon-theme/hicolor/"}"
+    done < <(find "$SCRIPT_DIR/ttyga-icon-theme/hicolor" -type f -print0)
     run update-desktop-database "$APPS_DIR" 2>/dev/null || true
     run gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
     echo "Done."
@@ -81,9 +75,6 @@ run install -m 755 "$SCRIPT_DIR/ttyga.py"       "$BIN_DIR/ttyga"
 run install -m 644 "$SCRIPT_DIR/TTYGA.md"       "$DATA_DIR/TTYGA.md"
 run install -m 644 "$SCRIPT_DIR/TTYGA_TECH.md"  "$DATA_DIR/TTYGA_TECH.md"
 
-# Monochrome welcome icon — always update (not user data).
-run install -m 644 "$SCRIPT_DIR/ttyga_mono.svg" "$CONFIG_DIR/ttyga_mono.svg"
-
 # Seed profiles.yaml on first install only — never overwrite user data.
 if "$DRY_RUN" || [ ! -f "$CONFIG_DIR/profiles.yaml" ]; then
     run install -m 644 "$SCRIPT_DIR/profiles.yaml.example" "$CONFIG_DIR/profiles.yaml"
@@ -92,34 +83,9 @@ if "$DRY_RUN" || [ ! -f "$CONFIG_DIR/profiles.yaml" ]; then
     fi
 fi
 
-# Raster icons
-for size in $ICON_SIZES; do
-    src="$SCRIPT_DIR/ttyga-icon-theme/hicolor/$size/apps/ttyga.png"
-    dst="$ICONS_BASE/$size/apps/ca.greg.ttyga.png"
-    run mkdir -p "$ICONS_BASE/$size/apps"
-    run install -m 644 "$src" "$dst"
-done
-
-# Scalable app icons
-run mkdir -p "$ICONS_BASE/scalable/apps"
-run install -m 644 \
-    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/apps/ttyga.svg" \
-    "$ICONS_BASE/scalable/apps/ca.greg.ttyga.svg"
-run install -m 644 \
-    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/apps/ttyga-watermark.svg" \
-    "$ICONS_BASE/scalable/apps/ttyga-watermark.svg"
-
-# Scalable action icons
-run mkdir -p "$ICONS_BASE/scalable/actions"
-run install -m 644 \
-    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-horiz-symbolic.svg" \
-    "$ICONS_BASE/scalable/actions/ttyga-split-horiz-symbolic.svg"
-run install -m 644 \
-    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-vert-symbolic.svg" \
-    "$ICONS_BASE/scalable/actions/ttyga-split-vert-symbolic.svg"
-run install -m 644 \
-    "$SCRIPT_DIR/ttyga-icon-theme/hicolor/scalable/actions/ttyga-split-quad-symbolic.svg" \
-    "$ICONS_BASE/scalable/actions/ttyga-split-quad-symbolic.svg"
+# Icons — every file is stored under its published name, so the whole theme
+# copies in verbatim. Adding an icon to ttyga-icon-theme/ needs no edit here.
+run cp -r "$SCRIPT_DIR/ttyga-icon-theme/hicolor/." "$ICONS_BASE/"
 
 if ! "$DRY_RUN"; then
     cat > "$APPS_DIR/ca.greg.ttyga.desktop" <<'EOF'
@@ -141,5 +107,6 @@ fi
 
 run update-desktop-database "$APPS_DIR" 2>/dev/null || true
 run gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+run rm -rf "$HOME/.cache/ttyga"
 
 echo "Done. Make sure $BIN_DIR is on your PATH."
