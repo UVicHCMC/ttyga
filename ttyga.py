@@ -18,6 +18,7 @@ Config lives under ~/.config/ttyga/:
 
 import copy
 import gi
+import xml.etree.ElementTree as ET
 import os
 import socket
 import subprocess
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.18"
+APP_VERSION = "0.6.20"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -59,7 +60,7 @@ CONFIG_FILE   = CONFIG_DIR / "profiles.yaml"
 SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
 STATE_FILE    = CONFIG_DIR / "app_state.json"
 LEGACY_CONFIG    = Path(__file__).parent / "profiles.yaml"
-MONO_ICON_NAME   = "ttyga_mono.svg"
+MONO_ICON_NAME   = "ttyga-mono"   # themed icon name (ttyga-icon-theme/.../apps)
 
 # These will be overridden by settings in ~/.config/ttyga/settings.yaml
 DEFAULT_SETTINGS = {
@@ -2243,16 +2244,9 @@ class DevFrame(Adw.Application):
             return
         cache_root = Path(GLib.get_user_cache_dir()) / 'ttyga'
         src_root   = Path(__file__).parent / 'ttyga-icon-theme'
-        # App icon is published under the reverse-DNS name GTK expects.
-        app_src = src_root / 'hicolor' / 'scalable' / 'apps' / 'ttyga.svg'
-        app_dst = cache_root / 'hicolor' / 'scalable' / 'apps' / 'ca.greg.ttyga.svg'
-        if app_src.exists():
-            app_dst.parent.mkdir(parents=True, exist_ok=True)
-            app_dst.write_bytes(app_src.read_bytes())
-        # All other SVGs (actions, etc.) are copied verbatim.
+        # Every icon is stored under its published name (the app icon as the
+        # reverse-DNS APP_ID), so the whole tree copies verbatim.
         for src in src_root.rglob('*.svg'):
-            if src == app_src:
-                continue
             dst = cache_root / src.relative_to(src_root)
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(src.read_bytes())
@@ -2562,6 +2556,7 @@ class DevFrame(Adw.Application):
 
         sidebar_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar_inner.set_hexpand(True)
+        sidebar_inner.set_vexpand(True)
 
         self.search_entry = Gtk.SearchEntry()
         self.search_entry.set_placeholder_text("Search profiles…")
@@ -2600,7 +2595,21 @@ class DevFrame(Adw.Application):
         wm_img.set_hexpand(True)
         wm_img.set_can_shrink(True)
         wm_img.set_content_fit(Gtk.ContentFit.CONTAIN)
-        wm_img.set_size_request(-1, 160)
+        _wm_aspect = None
+        if _wm_file:
+            try:
+                _svg = ET.parse(_wm_file.get_path()).getroot()
+                _vb  = (_svg.get('viewBox') or '0 0 100 100').split()
+                _wm_aspect = float(_vb[3]) / float(_vb[2])
+            except Exception:
+                pass
+        wm_img.set_size_request(-1, 75)
+        if _wm_aspect is not None:
+            def _on_wm_resize(widget, w, h, baseline, _r=_wm_aspect):
+                t = max(1, round(w * _r))
+                if widget.get_size_request()[1] != t:
+                    widget.set_size_request(-1, t)
+            wm_img.connect('size-allocate', _on_wm_resize)
         wm_box.append(wm_img)
         sidebar_inner.append(wm_box)
 
@@ -2719,16 +2728,22 @@ class DevFrame(Adw.Application):
     def _resolve_welcome_icon(self):
         """Locate the monochrome welcome icon. Resolution order:
            1. settings['welcome_image'] if set and the file exists
-           2. ttyga_mono.svg next to this script (project / installed location)
-           3. ttyga_mono.svg under ~/.config/ttyga/
+           2. the bundled 'ttyga-mono' themed icon (staged into the icon theme)
            Returns a Path, or None to fall back to the themed app icon."""
         override = self.settings.get('welcome_image', '')
         if override and Path(override).is_file():
             return Path(override)
-        for cand in (Path(__file__).parent / MONO_ICON_NAME,
-                     CONFIG_DIR / MONO_ICON_NAME):
-            if cand.is_file():
-                return cand
+        display = Gdk.Display.get_default()
+        theme   = Gtk.IconTheme.get_for_display(display) if display else None
+        icon    = (theme.lookup_icon(MONO_ICON_NAME, [], 128, 1,
+                                     Gtk.TextDirection.NONE, 0)
+                   if theme else None)
+        gfile   = icon.get_file() if icon else None
+        path    = gfile.get_path() if gfile else None
+        # lookup_icon falls back to a stand-in when the name is absent; only
+        # accept a hit that actually resolved to our bundled icon.
+        if path and MONO_ICON_NAME in Path(path).name:
+            return Path(path)
         return None
 
     def _on_welcome_link(self, _label, uri):
