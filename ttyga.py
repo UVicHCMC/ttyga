@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.20"
+APP_VERSION = "0.6.21"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -73,6 +73,7 @@ DEFAULT_SETTINGS = {
     'restore_tabs':      True,
     'welcome_image':     '',          # path to PNG/SVG; empty = monochrome icon
     'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
+    'watermark_opacity': 0.35,        # sidebar watermark opacity (0.0–1.0)
 }
 
 # ---------------------------------------------------------------------------
@@ -411,7 +412,7 @@ def _rgba(hex_or_rgba):
 # defaults and swap its content when the user changes themes.
 # ---------------------------------------------------------------------------
 
-def build_css(theme, ssh_color=''):
+def build_css(theme, ssh_color='', watermark_opacity=0.35):
     t = THEMES[theme]
     is_dark = theme in DARK_LIKE
     return f"""
@@ -594,6 +595,12 @@ popover > contents button.flat:hover {{
     font-size: 0.95em;
     color: {t['fg_dim']};
     font-style: italic;
+}}
+
+/* Sidebar watermark ------------------------------------------------------- */
+
+.sidebar-watermark {{
+    opacity: {watermark_opacity:.2f};
 }}
 """
 
@@ -1683,6 +1690,18 @@ class PreferencesWindow(Adw.PreferencesWindow):
         layout_row.add_suffix(layout_seg)
         appearance.add(layout_row)
 
+        # Watermark opacity
+        wm_opacity_row = Adw.SpinRow.new_with_range(0.0, 1.0, 0.05)
+        wm_opacity_row.set_title("Watermark opacity")
+        wm_opacity_row.set_subtitle("Sidebar logo transparency (0 = hidden, 1 = solid)")
+        wm_opacity_row.set_digits(2)
+        wm_opacity_row.set_value(
+            float(app.settings.get('watermark_opacity', DEFAULT_SETTINGS['watermark_opacity'])))
+        wm_opacity_row.connect(
+            'notify::value',
+            lambda r, _p: app.set_setting('watermark_opacity', round(r.get_value(), 2)))
+        appearance.add(wm_opacity_row)
+
         # --- Terminal --------------------------------------------------------
         terminal_grp = Adw.PreferencesGroup(title="Terminal")
         page.add(terminal_grp)
@@ -2097,7 +2116,7 @@ class DevFrame(Adw.Application):
         self.settings[key] = value
         self.save_settings()
 
-        if key == 'color_scheme':
+        if key in ('color_scheme', 'watermark_opacity'):
             self._apply_theme()
         elif key == 'sidebar_layout':
             self.reload_profiles()
@@ -2212,7 +2231,9 @@ class DevFrame(Adw.Application):
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.css_provider.load_from_data(
-            build_css(theme, self.settings.get('ssh_color', '')).encode('utf-8'))
+            build_css(theme, self.settings.get('ssh_color', ''),
+                      float(self.settings.get('watermark_opacity',
+                                              DEFAULT_SETTINGS['watermark_opacity']))).encode('utf-8'))
 
         # Theme class on the window mirrors what the HTML mock did with
         # .theme-light/.theme-dark/.theme-nord on its root. Useful as a hook
