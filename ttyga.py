@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.21"
+APP_VERSION = "0.6.32"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -73,7 +73,6 @@ DEFAULT_SETTINGS = {
     'restore_tabs':      True,
     'welcome_image':     '',          # path to PNG/SVG; empty = monochrome icon
     'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
-    'watermark_opacity': 0.35,        # sidebar watermark opacity (0.0–1.0)
 }
 
 # ---------------------------------------------------------------------------
@@ -412,7 +411,7 @@ def _rgba(hex_or_rgba):
 # defaults and swap its content when the user changes themes.
 # ---------------------------------------------------------------------------
 
-def build_css(theme, ssh_color='', watermark_opacity=0.35):
+def build_css(theme, ssh_color=''):
     t = THEMES[theme]
     is_dark = theme in DARK_LIKE
     return f"""
@@ -597,11 +596,6 @@ popover > contents button.flat:hover {{
     font-style: italic;
 }}
 
-/* Sidebar watermark ------------------------------------------------------- */
-
-.sidebar-watermark {{
-    opacity: {watermark_opacity:.2f};
-}}
 """
 
 
@@ -1690,18 +1684,6 @@ class PreferencesWindow(Adw.PreferencesWindow):
         layout_row.add_suffix(layout_seg)
         appearance.add(layout_row)
 
-        # Watermark opacity
-        wm_opacity_row = Adw.SpinRow.new_with_range(0.0, 1.0, 0.05)
-        wm_opacity_row.set_title("Watermark opacity")
-        wm_opacity_row.set_subtitle("Sidebar logo transparency (0 = hidden, 1 = solid)")
-        wm_opacity_row.set_digits(2)
-        wm_opacity_row.set_value(
-            float(app.settings.get('watermark_opacity', DEFAULT_SETTINGS['watermark_opacity'])))
-        wm_opacity_row.connect(
-            'notify::value',
-            lambda r, _p: app.set_setting('watermark_opacity', round(r.get_value(), 2)))
-        appearance.add(wm_opacity_row)
-
         # --- Terminal --------------------------------------------------------
         terminal_grp = Adw.PreferencesGroup(title="Terminal")
         page.add(terminal_grp)
@@ -2116,7 +2098,7 @@ class DevFrame(Adw.Application):
         self.settings[key] = value
         self.save_settings()
 
-        if key in ('color_scheme', 'watermark_opacity'):
+        if key == 'color_scheme':
             self._apply_theme()
         elif key == 'sidebar_layout':
             self.reload_profiles()
@@ -2231,9 +2213,7 @@ class DevFrame(Adw.Application):
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.css_provider.load_from_data(
-            build_css(theme, self.settings.get('ssh_color', ''),
-                      float(self.settings.get('watermark_opacity',
-                                              DEFAULT_SETTINGS['watermark_opacity']))).encode('utf-8'))
+            build_css(theme, self.settings.get('ssh_color', '')).encode('utf-8'))
 
         # Theme class on the window mirrors what the HTML mock did with
         # .theme-light/.theme-dark/.theme-nord on its root. Useful as a hook
@@ -2591,6 +2571,7 @@ class DevFrame(Adw.Application):
 
         sidebar_scroll = Gtk.ScrolledWindow()
         sidebar_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sidebar_scroll.set_hexpand(True)
         sidebar_scroll.set_vexpand(True)
 
         self.sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -2599,41 +2580,8 @@ class DevFrame(Adw.Application):
         self.sidebar_box.set_margin_start(6)
         self.sidebar_box.set_margin_end(6)
         sidebar_scroll.set_child(self.sidebar_box)
+
         sidebar_inner.append(sidebar_scroll)
-
-        wm_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        wm_box.add_css_class('sidebar-watermark')
-        wm_box.set_halign(Gtk.Align.FILL)
-        wm_box.set_margin_top(6)
-        wm_box.set_margin_bottom(0)
-        _wm_display = Gdk.Display.get_default()
-        _wm_theme   = Gtk.IconTheme.get_for_display(_wm_display) if _wm_display else None
-        _wm_icon    = (_wm_theme.lookup_icon('ttyga-watermark', [], 400, 1,
-                                             Gtk.TextDirection.NONE, 0)
-                       if _wm_theme else None)
-        _wm_file    = _wm_icon.get_file() if _wm_icon else None
-        wm_img = Gtk.Picture.new_for_file(_wm_file) if _wm_file else Gtk.Picture()
-        wm_img.set_hexpand(True)
-        wm_img.set_can_shrink(True)
-        wm_img.set_content_fit(Gtk.ContentFit.CONTAIN)
-        _wm_aspect = None
-        if _wm_file:
-            try:
-                _svg = ET.parse(_wm_file.get_path()).getroot()
-                _vb  = (_svg.get('viewBox') or '0 0 100 100').split()
-                _wm_aspect = float(_vb[3]) / float(_vb[2])
-            except Exception:
-                pass
-        wm_img.set_size_request(-1, 75)
-        if _wm_aspect is not None:
-            def _on_wm_resize(widget, w, h, baseline, _r=_wm_aspect):
-                t = max(1, round(w * _r))
-                if widget.get_size_request()[1] != t:
-                    widget.set_size_request(-1, t)
-            wm_img.connect('size-allocate', _on_wm_resize)
-        wm_box.append(wm_img)
-        sidebar_inner.append(wm_box)
-
         sidebar_outer.append(sidebar_inner)
 
         # Drag handle
