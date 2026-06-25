@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.32"
+APP_VERSION = "0.6.33"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -3096,6 +3096,11 @@ class DevFrame(Adw.Application):
         terminal = Vte.Terminal()
         terminal.set_hexpand(True)
         terminal.set_vexpand(True)
+        # Inset the terminal's left edge so the first column clears an
+        # adjacent Gtk.Paned separator, whose drag grab zone otherwise
+        # steals clicks meant for text selection. Applied to the terminal
+        # (not the pane-box) so the pane-bar above stays flush.
+        terminal.set_margin_start(12)
 
         font_str = ((profile.get('terminal_font') if profile else None) or
                     self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
