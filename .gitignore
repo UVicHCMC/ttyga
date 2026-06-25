@@ -6,3 +6,4 @@ profiles.yaml
 settings.yaml
 *.zip
 .claude/
+cruft/
