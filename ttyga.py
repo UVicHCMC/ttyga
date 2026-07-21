@@ -28,21 +28,23 @@ import yaml
 import json
 import re
 import logging
+from datetime import datetime
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Vte', '3.91')
 gi.require_version('Gdk', '4.0')
 gi.require_version('Adw', '1')
 gi.require_version('GdkPixbuf', '2.0')
+gi.require_version('PangoCairo', '1.0')
 
-from gi.repository import Gtk, Vte, GLib, Gdk, Gio, GObject, Adw, Pango, GdkPixbuf
+from gi.repository import Gtk, Vte, GLib, Gdk, Gio, GObject, Adw, Pango, GdkPixbuf, PangoCairo
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.37"
+APP_VERSION = "0.6.38"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -90,6 +92,13 @@ SIDEBAR_FRACTION = 0.22   # default sidebar width as fraction of window
 SIDEBAR_MIN_W    = 200    # pixels
 SIDEBAR_MAX_W    = 360    # pixels
 SIDEBAR_HANDLE_W = 4      # drag-handle width in pixels
+
+CLOCK_TIME_AREA_H = 64    # sidebar clock: time drawing area height, pixels
+CLOCK_TIME_MIN_PX = 20    # sidebar clock: smallest time font size, pixels
+CLOCK_TIME_MAX_PX = 80    # sidebar clock: largest time font size, pixels
+CLOCK_DATE_AREA_H = 26    # sidebar clock: date drawing area height, pixels
+CLOCK_DATE_MIN_PX = 10    # sidebar clock: smallest date font size, pixels
+CLOCK_DATE_MAX_PX = 22    # sidebar clock: largest date font size, pixels
 
 PROFILE_ICON_PX  = 24     # sidebar profile button icon size
 
@@ -562,6 +571,10 @@ paned > separator:hover {{
     min-width: 18px;
     border-radius: 4px;
 }}
+
+/* Sidebar clock ------------------------------------------------------------ */
+/* Both lines are Cairo/Pango-drawn so their font scales to width — see
+   _draw_clock_time / _draw_clock_date — so there's no CSS to style here. */
 
 /* Tab context menu popover ------------------------------------------------ */
 
@@ -2582,6 +2595,37 @@ class DevFrame(Adw.Application):
         sidebar_scroll.set_child(self.sidebar_box)
 
         sidebar_inner.append(sidebar_scroll)
+
+        # Clock — pinned to the bottom of the sidebar simply by being the
+        # last child after the vexpand'd scroll area; no overlay needed.
+        # Both lines are drawn (not Labels) so their font scales to fill the
+        # sidebar's width, however wide the user drags it.
+        sidebar_inner.append(Gtk.Separator())
+
+        clock_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        clock_box.set_margin_top(4)
+        clock_box.set_margin_bottom(8)
+        clock_box.set_margin_start(4)
+        clock_box.set_margin_end(4)
+
+        self._clock_time_text = datetime.now().strftime('%H:%M:%S')
+        self.clock_time_area = Gtk.DrawingArea()
+        self.clock_time_area.set_hexpand(True)
+        self.clock_time_area.set_content_height(CLOCK_TIME_AREA_H)
+        self.clock_time_area.set_draw_func(self._draw_clock_time)
+        clock_box.append(self.clock_time_area)
+
+        self._clock_date_text = datetime.now().strftime('%a %b %d %Y')
+        self.clock_date_area = Gtk.DrawingArea()
+        self.clock_date_area.set_hexpand(True)
+        self.clock_date_area.set_content_height(CLOCK_DATE_AREA_H)
+        self.clock_date_area.set_draw_func(self._draw_clock_date)
+        clock_box.append(self.clock_date_area)
+
+        sidebar_inner.append(clock_box)
+        self._update_clock()
+        GLib.timeout_add_seconds(1, self._update_clock)
+
         sidebar_outer.append(sidebar_inner)
 
         # Drag handle
@@ -4043,6 +4087,65 @@ class DevFrame(Adw.Application):
         terminals[(idx + direction) % len(terminals)].grab_focus()
 
     # ----- sidebar ---------------------------------------------------------
+
+    def _update_clock(self):
+        now = datetime.now()
+        self._clock_time_text = now.strftime('%H:%M:%S')
+        self._clock_date_text = now.strftime('%a %b %d %Y')
+        self.clock_time_area.queue_draw()
+        self.clock_date_area.queue_draw()
+        return True
+
+    def _draw_fitted_text(self, cr, width, height, text, color, min_px, max_px, bold=False):
+        """Render text as large as (width, height) allows.
+
+        A Gtk.Label can't do this — its font size is fixed at construction,
+        not recomputed as the user drags the sidebar wider or narrower.
+        Drawing it ourselves means we always know our own allocated size
+        and can scale a Pango layout to fit it exactly."""
+        if width <= 0 or height <= 0 or not text:
+            return
+
+        layout = PangoCairo.create_layout(cr)
+        layout.set_text(text, -1)
+
+        # Measure at a reference size, then scale proportionally to fit the
+        # available width (with a little breathing room on each side).
+        ref_px = 100
+        desc = Pango.FontDescription()
+        desc.set_family('monospace')
+        if bold:
+            desc.set_weight(Pango.Weight.BOLD)
+        desc.set_absolute_size(ref_px * Pango.SCALE)
+        layout.set_font_description(desc)
+        ref_w, ref_h = layout.get_pixel_size()
+        if ref_w <= 0:
+            return
+
+        pad = 8
+        font_px = ref_px * (width - 2 * pad) / ref_w
+        font_px = min(font_px, ref_px * height / ref_h)
+        font_px = max(min_px, min(max_px, font_px))
+
+        desc.set_absolute_size(font_px * Pango.SCALE)
+        layout.set_font_description(desc)
+        w, h = layout.get_pixel_size()
+
+        cr.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        cr.move_to((width - w) / 2, (height - h) / 2)
+        PangoCairo.show_layout(cr, layout)
+
+    def _draw_clock_time(self, area, cr, width, height):
+        theme = self.settings.get('color_scheme', 'dark')
+        fg = _rgba(THEMES.get(theme, THEMES['dark'])['fg'])
+        self._draw_fitted_text(cr, width, height, self._clock_time_text, fg,
+                                CLOCK_TIME_MIN_PX, CLOCK_TIME_MAX_PX, bold=True)
+
+    def _draw_clock_date(self, area, cr, width, height):
+        theme = self.settings.get('color_scheme', 'dark')
+        fg_dim = _rgba(THEMES.get(theme, THEMES['dark'])['fg_dim'])
+        self._draw_fitted_text(cr, width, height, self._clock_date_text, fg_dim,
+                                CLOCK_DATE_MIN_PX, CLOCK_DATE_MAX_PX)
 
     def _build_sidebar(self, state=None):
         while (child := self.sidebar_box.get_first_child()):
