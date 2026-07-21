@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.35"
+APP_VERSION = "0.6.36"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2036,7 +2036,7 @@ class DevFrame(Adw.Application):
                          flags=Gio.ApplicationFlags(0))
         self.expanders   = {}      # group name -> Gtk.Expander (expanders layout)
         self.window      = None
-        self.active_btn  = None    # currently highlighted profile row
+        self.active_btns = set()   # currently highlighted profile rows (one tab can host several, once merged)
         self.tab_count   = 0
         # Per-terminal metadata: {terminal: {'label': Gtk.Label, 'dot': Gtk.Image,
         #                                    'user': str, 'host': str, 'avatar': str|None,
@@ -2045,7 +2045,7 @@ class DevFrame(Adw.Application):
         self.css_provider = None
         self.settings    = self._load_settings()
         self._sidebar_toggle_btn = None
-        self.active_profile_key = None   # (name, group) of highlighted profile
+        self.active_profile_keys = set()   # {(name, group)} of highlighted profiles
         self._profile_buttons   = []     # [(btn, profile)] for search filtering
         self._flat_groups       = []     # [(header, vbox, g_name)] for flat layout
         self._font_zoom_delta   = 0      # ephemeral pt offset from saved font size
@@ -3175,21 +3175,36 @@ class DevFrame(Adw.Application):
         self._notified_roots.discard(tab_root)
         self._update_launcher_badge(len(self._notified_roots))
 
-        profile = self.tabs.get(term, {}).get('profile') if term else None
-        key = (profile.get('name'), profile.get('group', 'General')) if profile else None
+        self._update_sidebar_highlight(tab_root)
 
-        if self.active_btn:
-            self.active_btn.remove_css_class('active')
-            self.active_btn = None
+    def _update_sidebar_highlight(self, tab_root):
+        """Highlight every sidebar row whose profile is open as a pane in
+        tab_root — a merged tab can host more than one profile at once."""
+        keys = set()
+        for t, m in self.tabs.items():
+            if m.get('tab_root') is not tab_root:
+                continue
+            profile = m.get('profile')
+            if profile:
+                keys.add((profile.get('name'), profile.get('group', 'General')))
 
-        self.active_profile_key = key
+        for btn in self.active_btns:
+            btn.remove_css_class('active')
+        self.active_btns = set()
+        self.active_profile_keys = keys
 
-        if key:
-            for btn, p in self._profile_buttons:
-                if (p.get('name'), p.get('group', 'General')) == key:
-                    btn.add_css_class('active')
-                    self.active_btn = btn
-                    break
+        for btn, p in self._profile_buttons:
+            key = (p.get('name'), p.get('group', 'General'))
+            if key in keys:
+                btn.add_css_class('active')
+                self.active_btns.add(btn)
+
+    def _refresh_sidebar_highlight(self):
+        """Recompute highlighting for whichever tab is currently on screen."""
+        page = self.notebook.get_current_page()
+        if page < 0:
+            return
+        self._update_sidebar_highlight(self.notebook.get_nth_page(page))
 
     def _on_terminal_focus(self, terminal, _param):
         if terminal.has_focus():
@@ -3642,10 +3657,10 @@ class DevFrame(Adw.Application):
         if last_tab:
             # switch-page won't fire when there are no pages left, so clear the
             # sidebar highlight manually — _on_tab_switched never gets called.
-            if self.active_btn:
-                self.active_btn.remove_css_class('active')
-                self.active_btn = None
-            self.active_profile_key = None
+            for btn in self.active_btns:
+                btn.remove_css_class('active')
+            self.active_btns = set()
+            self.active_profile_keys = set()
             self._show_welcome()
 
     def _get_active_terminal(self):
@@ -3831,6 +3846,7 @@ class DevFrame(Adw.Application):
                 grandparent.set_end_child(sibling)
 
         self.tabs.pop(terminal, None)
+        self._refresh_sidebar_highlight()
         self._active_terminal = self._first_terminal_in(sibling)
         if self._active_terminal:
             _at  = self._active_terminal
@@ -3863,7 +3879,9 @@ class DevFrame(Adw.Application):
         meta    = self.tabs.get(terminal, {})
         profile = meta.get('profile')
 
-        # Collect other tabs that have exactly one pane (single-pane merge sources).
+        # Collect every other open tab (single-pane or already merged) as a
+        # potential merge candidate — merging just nests another nested Paned
+        # split into whichever side receives it.
         other_tabs = []
         seen_roots = {meta.get('tab_root')}
         for t, m in self.tabs.items():
@@ -3871,8 +3889,6 @@ class DevFrame(Adw.Application):
             if root in seen_roots:
                 continue
             seen_roots.add(root)
-            if len(list(self._all_terminals_in(root))) != 1:
-                continue
             title = m.get('label', Gtk.Label()).get_label() or 'Untitled'
             other_tabs.append((t, title))
 
@@ -4004,6 +4020,7 @@ class DevFrame(Adw.Application):
             target_dot.remove_css_class('tab-dot-local')
             target_dot.add_css_class('tab-dot-local')   # dim/neutral colour
             target_dot.set_visible(True)
+            self._refresh_sidebar_highlight()
             if first:
                 first.grab_focus()
             return False
@@ -4028,7 +4045,7 @@ class DevFrame(Adw.Application):
         while (child := self.sidebar_box.get_first_child()):
             self.sidebar_box.remove(child)
         self.expanders.clear()
-        self.active_btn = None
+        self.active_btns = set()
         self._profile_buttons.clear()
         self._flat_groups.clear()
 
@@ -4169,9 +4186,9 @@ class DevFrame(Adw.Application):
         btn.add_controller(rc)
 
         self._profile_buttons.append((btn, p))
-        if (p.get('name'), p.get('group', 'General')) == self.active_profile_key:
+        if (p.get('name'), p.get('group', 'General')) in self.active_profile_keys:
             btn.add_css_class('active')
-            self.active_btn = btn
+            self.active_btns.add(btn)
 
         return btn
 
@@ -4319,11 +4336,12 @@ class DevFrame(Adw.Application):
         return False
 
     def on_profile_clicked(self, widget, p):
-        if self.active_btn and self.active_btn is not widget:
-            self.active_btn.remove_css_class('active')
+        for btn in self.active_btns:
+            if btn is not widget:
+                btn.remove_css_class('active')
         widget.add_css_class('active')
-        self.active_btn = widget
-        self.active_profile_key = (p.get('name'), p.get('group', 'General'))
+        self.active_btns = {widget}
+        self.active_profile_keys = {(p.get('name'), p.get('group', 'General'))}
 
         active = self._get_active_terminal()
         cwd_uri = active.get_current_directory_uri() if active else None
