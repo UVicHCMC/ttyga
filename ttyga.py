@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.33"
+APP_VERSION = "0.6.34"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2523,7 +2523,7 @@ class DevFrame(Adw.Application):
             state.get('window_height', WIN_DEFAULT_H))
         if state.get('window_maximized', False):
             self.window.maximize()
-        self.window.connect("close-request", self.save_state)
+        self.window.connect("close-request", self._on_window_close_request)
         self.window.connect("notify::is-active", self._on_window_active_changed)
 
         # Capture-phase key handler so Ctrl+T / Ctrl+Alt+R aren't swallowed
@@ -3136,6 +3136,8 @@ class DevFrame(Adw.Application):
             spawn_env = [f'{k}={v}' for k, v in merged.items()]
 
         def _spawn_cb(term, pid, *_):
+            if pid >= 0 and term in self.tabs:
+                self.tabs[term]['child_pid'] = pid
             if on_spawn is not None and pid >= 0:
                 on_spawn(term)
 
@@ -3552,11 +3554,81 @@ class DevFrame(Adw.Application):
                 lambda: terminal.grab_focus() and False,
                 priority=GLib.PRIORITY_LOW) and False)
 
+    def _pane_has_foreground_process(self, terminal):
+        """True if the pty's foreground process group differs from the shell's
+        own — i.e. some child process (not just the login shell) is running."""
+        meta = self.tabs.get(terminal)
+        pid = meta.get('child_pid') if meta else None
+        if not pid:
+            return False
+        pty = terminal.get_pty()
+        if pty is None:
+            return False
+        try:
+            return os.tcgetpgrp(pty.get_fd()) != os.getpgid(pid)
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _any_process_running(self):
+        return any(self._pane_has_foreground_process(t) for t in self.tabs)
+
+    def _on_window_close_request(self, window):
+        if self._any_process_running():
+            self._confirm_close(
+                "Quit ttyga?",
+                "A process is still running. Quit anyway?",
+                self._quit_after_confirm)
+            return True
+        self.save_state()
+        return False
+
+    def _quit_after_confirm(self):
+        self.save_state()
+        self.window.destroy()
+
+    def _request_quit(self):
+        """Ctrl+Q entry point — self.quit() bypasses close-request, so the
+        running-process check has to happen here instead."""
+        if self._any_process_running():
+            self._confirm_close(
+                "Quit ttyga?",
+                "A process is still running. Quit anyway?",
+                lambda: (self.save_state(), self.quit()))
+            return
+        self.save_state()
+        self.quit()
+
+    def _confirm_close(self, heading, body, on_confirm):
+        """Ask before a destructive close. Calls on_confirm() only if the user
+        picks the destructive response."""
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("close", "Close Anyway")
+        dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        def on_response(_dialog, response):
+            if response == "close":
+                on_confirm()
+        dialog.connect("response", on_response)
+        dialog.present(self.window)
+
     def _on_close_tab(self, btn, terminal):
         """Close the whole tab (all panes). Called by the tab close button."""
         tab_root = self.tabs.get(terminal, {}).get('tab_root')
         if tab_root is None:
             return
+        running = any(self._pane_has_foreground_process(t)
+                      for t, m in self.tabs.items() if m.get('tab_root') is tab_root)
+        if running:
+            self._confirm_close(
+                "Close Tab?",
+                "A process is still running in this tab. Close it anyway?",
+                lambda: self._do_close_tab(tab_root))
+            return
+        self._do_close_tab(tab_root)
+
+    def _do_close_tab(self, tab_root):
         page_num = self.notebook.page_num(tab_root)
         if page_num < 0:
             return
@@ -3715,6 +3787,15 @@ class DevFrame(Adw.Application):
 
     def _close_pane(self, terminal):
         """Remove one pane. The tab survives; caller ensures it isn't the last pane."""
+        if self._pane_has_foreground_process(terminal):
+            self._confirm_close(
+                "Close Pane?",
+                "A process is still running in this pane. Close it anyway?",
+                lambda: self._do_close_pane(terminal))
+            return
+        self._do_close_pane(terminal)
+
+    def _do_close_pane(self, terminal):
         wrapper     = terminal.get_parent()   # pane-box
         parent      = wrapper.get_parent()    # Gtk.Paned
         if not isinstance(parent, Gtk.Paned):
@@ -4147,7 +4228,7 @@ class DevFrame(Adw.Application):
 
         # Ctrl+Q — quit
         if not has_shift and not has_alt and keyval in (Gdk.KEY_Q, Gdk.KEY_q):
-            self.quit()
+            self._request_quit()
             return True
 
         # Ctrl+Shift+T — new tab
