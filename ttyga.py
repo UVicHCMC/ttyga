@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.34"
+APP_VERSION = "0.6.35"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -3116,7 +3116,7 @@ class DevFrame(Adw.Application):
         terminal.connect('selection-changed', self._on_term_selection_changed)
         terminal.connect('window-title-changed', self._on_terminal_title_changed)
         terminal.connect('notify::has-focus', self._on_terminal_focus)
-        terminal.connect('contents-changed', self._on_terminal_activity)
+        terminal.connect('bell', self._on_terminal_bell)
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self.on_key_pressed)
@@ -3204,8 +3204,9 @@ class DevFrame(Adw.Application):
             self._notified_roots.discard(meta.get('tab_root'))
             self._update_launcher_badge(len(self._notified_roots))
 
-    def _on_terminal_activity(self, terminal):
-        """Flag background-tab activity: update the dot and fire a desktop notification."""
+    def _on_terminal_bell(self, terminal):
+        """Fired on a BEL from the pty (e.g. Claude Code ringing the bell when
+        it's waiting for input) — flag the background tab and notify."""
         meta = self.tabs.get(terminal)
         if not meta:
             return
