@@ -6,7 +6,7 @@ ttyga — GTK4 + Vte + libadwaita terminal with a profile sidebar.
 Single-file Adw.Application that hosts a Gtk.Notebook of Vte.Terminal widgets
 beside an Adw.OverlaySplitView sidebar populated from profiles.yaml. The
 headerbar carries a UserBadge reflecting the active connection, plus
-edit-profiles / sidebar-toggle / new-tab / split-pane / menu buttons. A Preferences window
+edit-profiles / sidebar-toggle / new-tab / menu buttons. A Preferences window
 controls colour scheme, sidebar layout, font, scrollback, and a few terminal
 toggles.
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.38"
+APP_VERSION = "0.6.39"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -2759,13 +2759,23 @@ class DevFrame(Adw.Application):
             return Path(path)
         return None
 
+    def _split_tab_or_pane(self, axis, orientation):
+        """Split the focused pane, or — when nothing is open, which is the only
+        state the welcome screen is visible in — open a new pre-split tab."""
+        if self._get_active_terminal() is None:
+            self.add_tab(profile={'name': f"{_LOCAL_USER}@{_LOCAL_HOST}",
+                                  'layout': {'split': axis,
+                                             'start': {}, 'end': {}}})
+        else:
+            self._split_pane(orientation)
+
     def _on_welcome_link(self, _label, uri):
         if uri == 'new-tab':
             self.add_tab()
         elif uri == 'split-beside':
-            self._split_pane(Gtk.Orientation.HORIZONTAL)
+            self._split_tab_or_pane('horizontal', Gtk.Orientation.HORIZONTAL)
         elif uri == 'split-below':
-            self._split_pane(Gtk.Orientation.VERTICAL)
+            self._split_tab_or_pane('vertical', Gtk.Orientation.VERTICAL)
         elif uri == 'toggle-sidebar':
             self.split_view.set_show_sidebar(not self.split_view.get_show_sidebar())
         return True
@@ -2786,13 +2796,6 @@ class DevFrame(Adw.Application):
         self._sidebar_toggle_btn.set_tooltip_text("Toggle sidebar (Ctrl+Shift+B)")
         self._sidebar_toggle_btn.connect('toggled', self._on_sidebar_toggle)
         header.pack_start(self._sidebar_toggle_btn)
-
-        new_tab_btn = Gtk.Button()
-        new_tab_btn.set_icon_name('tab-new-symbolic')
-        new_tab_btn.add_css_class('flat')
-        new_tab_btn.set_tooltip_text("New tab (Ctrl+Shift+T)")
-        new_tab_btn.connect('clicked', self.add_tab)
-        header.pack_start(new_tab_btn)
 
         _title = f"{_LOCAL_USER}@{_LOCAL_HOST}"
         split_popover = Gtk.Popover()
@@ -2828,12 +2831,17 @@ class DevFrame(Adw.Application):
             split_box.append(row)
         split_popover.set_child(split_box)
 
-        split_btn = Gtk.MenuButton()
-        split_btn.set_icon_name('go-down-symbolic')
-        split_btn.add_css_class('flat')
-        split_btn.set_tooltip_text("New split tab")
-        split_btn.set_popover(split_popover)
-        header.pack_start(split_btn)
+        # Click opens a plain tab; the arrow offers the pre-split layouts. Both
+        # are "new tab" actions, so they share one button — the old standalone
+        # dropdown was indistinguishable from the per-pane split buttons on the
+        # notebook's action widget, which do something quite different.
+        new_tab_btn = Adw.SplitButton()
+        new_tab_btn.set_icon_name('tab-new-symbolic')
+        new_tab_btn.add_css_class('flat')
+        new_tab_btn.set_tooltip_text("New tab (Ctrl+Shift+T) — arrow for split layouts")
+        new_tab_btn.set_popover(split_popover)
+        new_tab_btn.connect('clicked', self.add_tab)
+        header.pack_start(new_tab_btn)
 
         # Trailing: open-in split-button + menu
         open_menu = Gio.Menu()
@@ -4367,12 +4375,12 @@ class DevFrame(Adw.Application):
 
         # Ctrl+Shift+E — split right (side by side)
         if has_shift and not has_alt and keyval in (Gdk.KEY_E, Gdk.KEY_e):
-            self._split_pane(Gtk.Orientation.HORIZONTAL)
+            self._split_tab_or_pane('horizontal', Gtk.Orientation.HORIZONTAL)
             return True
 
         # Ctrl+Shift+D — split down (top / bottom)
         if has_shift and not has_alt and keyval in (Gdk.KEY_D, Gdk.KEY_d):
-            self._split_pane(Gtk.Orientation.VERTICAL)
+            self._split_tab_or_pane('vertical', Gtk.Orientation.VERTICAL)
             return True
 
         # Ctrl+Shift+B — toggle sidebar
