@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.39"
+APP_VERSION = "0.6.46"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -297,6 +297,54 @@ VTE_BRIGHT_WHITE = '#ffffff'   # ANSI 15
 # Design tokens — three palettes lifted directly from the design handoff.
 # Each value flows into both the Gtk CSS provider (for the chrome) and the
 # Vte.Terminal palette (for the terminal contents themselves).
+#
+# Key            | Used for
+# ---------------|------------------------------------------------------------
+# bg             | Window background; checked-notebook-tab background.
+# bg_elev        | Secondary windows (.elevated-window: profile editor,
+#                | preferences, help, icon picker, variable prompt) — a
+#                | shade lighter than `bg` so they read as raised above it.
+# bg_sidebar     | Sidebar pane background; popover/context-menu background.
+# bg_headerbar   | Headerbar, tab-strip, and pane-bar (split-pane title bar)
+#                | background — all three currently share this one token.
+# bg_shaded      | Recessed text-entry "wells" — the profile editor's
+#                | command/env Gtk.TextViews.
+# fg             | Primary text colour (window text, popover menu text).
+# fg_dim         | Secondary/dim text — sidebar group headers, pane-bar
+#                | labels, the "local" tab-dot colour, dim-label/caption text.
+# border         | Hairline dividers: headerbar/tab-strip/pane-bar bottom
+#                | borders, the split-pane separator, the sidebar resize
+#                | handle.
+# border_strong  | Plain (non-paned) Gtk.Separator widgets — the profile
+#                | editor's list/form divider and section rules, the
+#                | sidebar divider. Heavier than `border`'s hairlines since
+#                | these mark real layout boundaries.
+# accent         | Interactive/active highlight — active sidebar profile row,
+#                | checked-tab underline, suggested-action buttons, hover
+#                | colour for the sidebar handle and pane separator.
+# accent_fg      | Text/icon colour to use on top of an accent-coloured
+#                | surface (e.g. the active profile row's label).
+# destructive    | Destructive-action buttons — solid fill on Adw.AlertDialog's
+#                | DESTRUCTIVE response buttons, icon tint on flat destructive
+#                | buttons (e.g. the profile editor's delete-profile button).
+# row_hover      | Hover background for sidebar profile rows and popover
+#                | menu buttons.
+# row_active     | Pressed (:active, mouse-down) state for sidebar profile
+#                | rows and the profile editor's list rows — distinct from
+#                | the persistent .active/:selected highlight, which still
+#                | wins if both apply at once.
+# term_bg        | The Vte.Terminal's own background colour. Also reused for
+#                | the pane-box background, so the margin "gutter" around
+#                | each terminal matches its content instead of the chrome.
+# term_fg        | The Vte.Terminal's own foreground (default text) colour.
+# term_prompt    | ANSI blue slot in the 16-colour terminal palette (see
+#                | _vte_palette below) — typically the shell prompt colour.
+# term_success   | ANSI green slot — success/OK output.
+# term_warn      | ANSI yellow slot — warnings; also the tab activity-dot
+#                | colour and the background-tab bell-flash animation.
+# term_err       | ANSI red slot — errors.
+# term_string    | ANSI magenta slot — typically quoted strings in
+#                | syntax-aware CLI output.
 # ---------------------------------------------------------------------------
 
 THEMES = {
@@ -308,8 +356,7 @@ THEMES = {
         'bg_shaded':       '#e6e6e6',
         'fg':              '#2e3436',
         'fg_dim':          '#5e5c64',
-        'fg_disabled':     '#9e9e9e',
-        'border':          'rgba(0,0,0,0.10)',
+        'border':          '#dcdcdc',
         'border_strong':   'rgba(0,0,0,0.18)',
         'accent':          '#3584e4',
         'accent_fg':       '#ffffff',
@@ -332,8 +379,7 @@ THEMES = {
         'bg_shaded':       '#1e1e1e',
         'fg':              '#ffffff',
         'fg_dim':          '#b3b3b3',
-        'fg_disabled':     '#6e6e6e',
-        'border':          'rgba(255,255,255,0.10)',
+        'border':          '#3d3d3d',
         'border_strong':   'rgba(255,255,255,0.18)',
         'accent':          '#78aeed',
         'accent_fg':       '#00305c',
@@ -356,8 +402,7 @@ THEMES = {
         'bg_shaded':       '#262b35',
         'fg':              '#eceff4',
         'fg_dim':          '#aab2c0',
-        'fg_disabled':     '#6c7383',
-        'border':          'rgba(255,255,255,0.07)',
+        'border':          '#434955',
         'border_strong':   'rgba(255,255,255,0.14)',
         'accent':          '#88c0d0',
         'accent_fg':       '#1f2530',
@@ -430,6 +475,14 @@ window {{
     color: {t['fg']};
 }}
 
+/* Secondary windows (profile editor, preferences, help, icon picker,
+   variable prompt) — a shade lighter than the main window so they read as
+   a raised layer above it rather than looking flush with it. */
+
+window.elevated-window {{
+    background-color: {t['bg_elev']};
+}}
+
 headerbar {{
     background-color: {t['bg_headerbar']};
     border-bottom: 1px solid {t['border']};
@@ -467,6 +520,7 @@ headerbar splitbutton image {{
     font-size: 12pt;
 }}
 .profile-row:hover {{ background: {t['row_hover']}; }}
+.profile-row:active {{ background: {t['row_active']}; }}
 .profile-row.active {{
     background: {t['accent']};
     color: {t['accent_fg']};
@@ -486,6 +540,8 @@ notebook tab {{
 }}
 notebook tab:checked {{
     background: {t['bg']};
+    box-shadow: none;
+    border-bottom: 2px solid {t['accent']};
 }}
 notebook > header.top > tabs {{
     margin-bottom: 0;
@@ -505,7 +561,16 @@ notebook > header.top > tabs {{
 
 /* Editor list ------------------------------------------------------------- */
 
+/* GtkListBox's own CSS node ("list") has no background of its own; left
+   unstyled it falls back to Adwaita's default dark surface colour instead
+   of the app palette. Recessed, matching the input wells above. */
+
+.editor-list list {{
+    background: {t['bg_shaded']};
+}}
+
 .editor-list row {{ padding: 4px 8px; }}
+.editor-list row:active {{ background: {t['row_active']}; }}
 .editor-list row:selected {{
     background: {t['accent']};
     color: {t['accent_fg']};
@@ -520,6 +585,15 @@ notebook > header.top > tabs {{
     opacity: 0.85;
 }}
 
+/* Recessed text-entry wells (profile editor's command/env text views) —
+   GtkTextView paints its background on the inner `text` node, not the
+   `textview` node itself, so both need the rule. */
+
+textview.input-well,
+textview.input-well text {{
+    background-color: {t['bg_shaded']};
+}}
+
 /* Suggested-action buttons ------------------------------------------------ */
 
 button.suggested-action {{
@@ -529,6 +603,51 @@ button.suggested-action {{
 button.suggested-action:hover {{
     background: shade({t['accent']}, 1.15);
     color: {t['accent_fg']};
+}}
+
+/* Destructive-action buttons ----------------------------------------------- */
+/* `color` is inherited, but some destructive buttons set it explicitly on
+   an internal label — an explicit (if lower-priority) declaration on that
+   exact node beats an inherited one from the button, so descendants need
+   the same colour set directly, not just the button node itself. */
+
+/* Solid variant — a plain Gtk.Button we tag with .destructive-action
+   ourselves (e.g. the profile editor's delete-profile button uses this
+   combined with .flat below; kept here for any non-flat use too). */
+
+button.destructive-action,
+button.destructive-action * {{
+    color: {t['accent_fg']};
+}}
+button.destructive-action {{
+    background: {t['destructive']};
+}}
+button.destructive-action:hover {{
+    background: shade({t['destructive']}, 1.15);
+}}
+
+/* Flat variant (icon-only toolbar buttons, e.g. the profile editor's
+   delete-profile button) — tint the icon instead of filling a background. */
+
+button.flat.destructive-action,
+button.flat.destructive-action * {{
+    color: {t['destructive']};
+}}
+button.flat.destructive-action {{
+    background: transparent;
+}}
+button.flat.destructive-action:hover {{
+    background: {t['row_hover']};
+}}
+
+/* Adw.AlertDialog's own response buttons use a different, libadwaita-
+   internal class — bare .destructive, not .destructive-action — on a
+   .flat.text-button. Confirmed by walking the live widget tree; not
+   documented anywhere obvious. */
+
+button.destructive,
+button.destructive * {{
+    color: {t['destructive']};
 }}
 
 /* Sidebar resize handle --------------------------------------------------- */
@@ -545,13 +664,27 @@ button.suggested-action:hover {{
 /* Split panes ------------------------------------------------------------- */
 
 paned > separator {{
-    min-width: 3px;
-    min-height: 3px;
+    min-width: 1px;
+    min-height: 1px;
     background: {t['border']};
     transition: background 120ms ease;
 }}
 paned > separator:hover {{
     background: {t['accent']};
+}}
+
+/* Plain (non-paned) separators — profile editor's list/form divider and
+   section rules, sidebar divider. Heavier than the hairline `border` above
+   since these mark real layout boundaries, not just chrome edges. */
+
+separator {{
+    min-width: 1px;
+    min-height: 1px;
+    background: {t['border_strong']};
+}}
+
+.pane-box {{
+    background: {t['term_bg']};
 }}
 
 .pane-bar {{
@@ -621,6 +754,7 @@ class IconPickerDialog(Adw.Window):
 
     def __init__(self, parent, on_pick):
         super().__init__(title="Choose Icon", transient_for=parent, modal=True)
+        self.add_css_class('elevated-window')
         self._on_pick = on_pick
         self.set_default_size(500, 420)
 
@@ -741,6 +875,7 @@ class VariablePromptDialog(Adw.Window):
             title=f"Launch: {profile.get('name', '')}",
             transient_for=app.window,
             modal=True)
+        self.add_css_class('elevated-window')
         self._on_launch = on_launch
         self.set_default_size(380, -1)
 
@@ -801,6 +936,7 @@ class VariablePromptDialog(Adw.Window):
 class EditorWindow(Adw.Window):
     def __init__(self, app, select_key=None):
         super().__init__(title="Edit Profiles", transient_for=app.window, modal=True)
+        self.add_css_class('elevated-window')
         self._select_key = select_key
         self.app = app
         self.current_profile = None
@@ -879,6 +1015,7 @@ class EditorWindow(Adw.Window):
 
         del_btn = Gtk.Button(icon_name='list-remove-symbolic')
         del_btn.add_css_class('flat')
+        del_btn.add_css_class('destructive-action')
         del_btn.set_tooltip_text("Delete profile")
         del_btn.connect("clicked", self._on_delete)
         btn_bar.append(del_btn)
@@ -1015,6 +1152,7 @@ class EditorWindow(Adw.Window):
         cmd_scroll.set_min_content_height(70)
         cmd_scroll.set_has_frame(True)
         self.command_view = Gtk.TextView()
+        self.command_view.add_css_class('input-well')
         self.command_view.set_monospace(True)
         self.command_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.command_view.set_top_margin(6)
@@ -1064,6 +1202,7 @@ class EditorWindow(Adw.Window):
         env_scroll.set_min_content_height(50)
         env_scroll.set_has_frame(True)
         self.env_view = Gtk.TextView()
+        self.env_view.add_css_class('input-well')
         self.env_view.set_monospace(True)
         self.env_view.set_wrap_mode(Gtk.WrapMode.NONE)
         self.env_view.set_top_margin(6)
@@ -1636,6 +1775,7 @@ class PreferencesWindow(Adw.PreferencesWindow):
 
     def __init__(self, app):
         super().__init__(transient_for=app.window, modal=True)
+        self.add_css_class('elevated-window')
         self.app = app
         self.set_title("Preferences")
         self.set_default_size(PREFS_W, PREFS_H)
@@ -1822,6 +1962,7 @@ class HelpWindow(Adw.Window):
 
     def __init__(self, parent):
         super().__init__(title="ttyga Help", transient_for=parent, modal=False)
+        self.add_css_class('elevated-window')
         self.set_default_size(900, 640)
         self._search_iters = []
         self._search_pos = 0
@@ -2291,6 +2432,7 @@ class DevFrame(Adw.Application):
                 'profile': None, 'tab_root': tab_root,
                 'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
                 'spawn_dir': os.environ.get('HOME', '/'),
+                'own_title': tab_label.get_label(),
             }
             return self._make_pane_box(terminal, self.tabs[terminal])
 
@@ -2354,6 +2496,7 @@ class DevFrame(Adw.Application):
                 'base_font': base_font,
                 'tab_root':  tab_root,
                 'spawn_dir': cwd or os.environ.get('HOME', '/'),
+                'own_title': tab_label.get_label(),
             }
             return self._make_pane_box(terminal, self.tabs[terminal])
 
@@ -2379,6 +2522,7 @@ class DevFrame(Adw.Application):
             'profile': None, 'tab_root': tab_root,
             'base_font': self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']),
             'spawn_dir': os.environ.get('HOME', '/'),
+            'own_title': tab_label.get_label(),
         }
         return self._make_pane_box(terminal, self.tabs[terminal])
 
@@ -2448,6 +2592,7 @@ class DevFrame(Adw.Application):
             'tab_root':   tab_root,
             'spawn_dir':  spawn_dir,
             'pane_label': cmd,               # show command in pane-bar; empty = plain shell
+            'own_title':  tab_label.get_label(),
         }
         return self._make_pane_box(terminal, self.tabs[terminal])
 
@@ -3344,10 +3489,14 @@ class DevFrame(Adw.Application):
 
     def _on_terminal_title_changed(self, terminal):
         title = terminal.get_window_title()
-        if title and terminal is self._active_terminal:
-            meta = self.tabs.get(terminal)
-            if meta and meta.get('profile') is None:
-                meta['label'].set_label(title)
+        if not title:
+            return
+        meta = self.tabs.get(terminal)
+        if meta is None or meta.get('profile') is not None:
+            return
+        meta['own_title'] = title
+        if terminal is self._active_terminal:
+            meta['label'].set_label(title)
 
     def _make_tab_label(self, title, kind='local', icon=None):
         """A tab: status dot · [profile icon] · title · close.
@@ -3605,6 +3754,7 @@ class DevFrame(Adw.Application):
             'spawn_dir': (str(Path(p_cwd).expanduser()) if p_cwd
                           else _implied_cwd(opts.get('command', ''))
                           or os.environ.get('HOME', '/')),
+            'own_title': title,
         }
         tab_root.append(self._make_pane_box(terminal, self.tabs[terminal]))
         self._update_pane_bars(tab_root)
@@ -3827,6 +3977,7 @@ class DevFrame(Adw.Application):
             'base_font': base_font,
             'tab_root':  tab_root,
             'spawn_dir': new_spawn_dir,
+            'own_title': meta.get('own_title', meta['label'].get_text()),
         }
         wrapper     = terminal.get_parent()   # pane-box
         parent      = wrapper.get_parent()    # tab_root Box or Gtk.Paned
@@ -3906,8 +4057,43 @@ class DevFrame(Adw.Application):
         if self._active_terminal:
             _at  = self._active_terminal
             _tr  = self.tabs[_at]['tab_root']
+            remaining = list(self._all_terminals_in(_tr))
+            if len(remaining) == 1:
+                self._unmerge_tab_label(_tr, remaining[0])
             GLib.idle_add(lambda: self._update_pane_bars(_tr) or False)
             GLib.idle_add(lambda: _at.grab_focus() and False)
+
+    def _unmerge_tab_label(self, tab_root, terminal):
+        """A merged tab's title/icon is a composite of all its panes. When
+        closes bring it back down to a single pane, restore the tab label
+        and dot/icon to reflect just that one remaining terminal."""
+        meta = self.tabs.get(terminal)
+        if meta is None:
+            return
+        profile = meta.get('profile')
+        kind    = meta.get('kind', 'local')
+        icon    = self._profile_icon(profile) if profile else None
+        title   = meta.get('own_title') or meta['label'].get_text()
+
+        meta['label'].set_label(title)
+
+        dot = meta['dot']
+        dot.set_from_icon_name('media-record-symbolic')
+        dot.set_pixel_size(10)
+        dot.remove_css_class('tab-dot-ssh')
+        dot.remove_css_class('tab-dot-local')
+        dot.add_css_class(f'tab-dot-{kind}')
+        dot.set_visible(not icon)
+
+        tab_box = self.notebook.get_tab_label(tab_root)
+        if tab_box:
+            # Second child (after the dot) is the profile-icon widget, if any
+            # — merging hides it in favour of the split icon on the dot.
+            child = tab_box.get_first_child()   # dot
+            if child:
+                sibling = child.get_next_sibling()
+                if sibling and sibling is not meta['label']:
+                    sibling.set_visible(bool(icon))
 
     def _close_active_pane(self):
         terminal = self._get_active_terminal()
@@ -4031,14 +4217,22 @@ class DevFrame(Adw.Application):
         target_root.append(paned)
 
         # Re-key all source terminals: they now live in target's tab.
+        # Stamp each side's panes with the standalone title they'd revert to
+        # if this tab is ever unmerged back down to one pane (setdefault so
+        # panes that already carry a title from an earlier merge keep it).
         target_label = target_meta['label']
         target_dot   = target_meta['dot']
+        for t in list(self._all_terminals_in(target_content)):
+            m = self.tabs.get(t)
+            if m:
+                m.setdefault('own_title', target_title)
         for t in list(self._all_terminals_in(source_content)):
             m = self.tabs.get(t)
             if m:
                 m['tab_root'] = target_root
                 m['label']    = target_label
                 m['dot']      = target_dot
+                m.setdefault('own_title', source_title)
 
         # Remove the now-empty source page. source_root is empty so GTK has
         # nothing to destroy inside it when it loses its last reference.
