@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.46"
+APP_VERSION = "0.6.47"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -3495,6 +3495,15 @@ class DevFrame(Adw.Application):
         if meta is None or meta.get('profile') is not None:
             return
         meta['own_title'] = title
+        tab_root = meta.get('tab_root')
+        if tab_root is not None and len(list(self._all_terminals_in(tab_root))) > 1:
+            # The label is shared by every pane in the tab, so one shell's
+            # title must not overwrite it. A merged tab refreshes its
+            # composite instead; own_title above is what a later unmerge
+            # restores either way.
+            if meta.get('merged'):
+                self._rebuild_merged_label(tab_root)
+            return
         if terminal is self._active_terminal:
             meta['label'].set_label(title)
 
@@ -3834,8 +3843,30 @@ class DevFrame(Adw.Application):
         dialog.connect("response", on_response)
         dialog.present(self.window)
 
+    def _live_terminal_for_tab_box(self, tab_box, terminal=None):
+        """Resolve a still-open terminal for the tab carrying `tab_box`.
+
+        Tab-label widgets (close button, right-click menu) are bound to
+        whichever terminal existed when the tab was built. That terminal can
+        die while the tab lives on — close one pane of a split, or close the
+        target pane of a merged tab — leaving the widget pointing at a key
+        that is no longer in `self.tabs`. Fall back to the notebook page that
+        owns this tab label and pick any live pane from it."""
+        if terminal is not None and terminal in self.tabs:
+            return terminal
+        if tab_box is None:
+            return None
+        for i in range(self.notebook.get_n_pages()):
+            page = self.notebook.get_nth_page(i)
+            if self.notebook.get_tab_label(page) is tab_box:
+                return next((t for t in self._all_terminals_in(page)
+                             if t in self.tabs), None)
+        return None
+
     def _on_close_tab(self, btn, terminal):
         """Close the whole tab (all panes). Called by the tab close button."""
+        if terminal not in self.tabs and btn is not None:
+            terminal = self._live_terminal_for_tab_box(btn.get_parent(), terminal)
         tab_root = self.tabs.get(terminal, {}).get('tab_root')
         if tab_root is None:
             return
@@ -4060,8 +4091,29 @@ class DevFrame(Adw.Application):
             remaining = list(self._all_terminals_in(_tr))
             if len(remaining) == 1:
                 self._unmerge_tab_label(_tr, remaining[0])
+            else:
+                # Still more than one pane — drop the closed pane's name from
+                # the composite title rather than leaving it stale.
+                self._rebuild_merged_label(_tr)
             GLib.idle_add(lambda: self._update_pane_bars(_tr) or False)
             GLib.idle_add(lambda: _at.grab_focus() and False)
+
+    def _rebuild_merged_label(self, tab_root):
+        """Recompute a merged tab's composite title from the panes still open.
+
+        Only panes carrying the `merged` flag contribute — a pane split off
+        inside a merged tab is not a merged session and would otherwise
+        duplicate its parent's name in the title."""
+        parts, label = [], None
+        for t in self._all_terminals_in(tab_root):
+            m = self.tabs.get(t)
+            if m is None:
+                continue
+            label = label or m.get('label')
+            if m.get('merged') and m.get('own_title'):
+                parts.append(m['own_title'])
+        if label is not None and parts:
+            label.set_label(' | '.join(parts))
 
     def _unmerge_tab_label(self, tab_root, terminal):
         """A merged tab's title/icon is a composite of all its panes. When
@@ -4070,6 +4122,7 @@ class DevFrame(Adw.Application):
         meta = self.tabs.get(terminal)
         if meta is None:
             return
+        meta.pop('merged', None)   # no longer part of a composite
         profile = meta.get('profile')
         kind    = meta.get('kind', 'local')
         icon    = self._profile_icon(profile) if profile else None
@@ -4117,6 +4170,9 @@ class DevFrame(Adw.Application):
 
     def _show_tab_context_menu(self, terminal, tab_box, x, y):
         """Build and show the tab context menu at the click position."""
+        terminal = self._live_terminal_for_tab_box(tab_box, terminal)
+        if terminal is None:
+            return
         meta    = self.tabs.get(terminal, {})
         profile = meta.get('profile')
 
@@ -4226,6 +4282,7 @@ class DevFrame(Adw.Application):
             m = self.tabs.get(t)
             if m:
                 m.setdefault('own_title', target_title)
+                m['merged'] = True
         for t in list(self._all_terminals_in(source_content)):
             m = self.tabs.get(t)
             if m:
@@ -4233,6 +4290,7 @@ class DevFrame(Adw.Application):
                 m['label']    = target_label
                 m['dot']      = target_dot
                 m.setdefault('own_title', source_title)
+                m['merged']   = True
 
         # Remove the now-empty source page. source_root is empty so GTK has
         # nothing to destroy inside it when it loses its last reference.
@@ -4254,7 +4312,10 @@ class DevFrame(Adw.Application):
             # Update tab label to reflect the merged state:
             #   title  → "target | source"
             #   icon   → split-pane icon (hides any profile icon widget)
-            target_label.set_label(f"{target_title} | {source_title}")
+            # Built from each pane's own_title rather than the two captured
+            # strings, so a second merge into an already-merged tab composes
+            # correctly even if this idle has not yet run for the first one.
+            self._rebuild_merged_label(target_root)
             tab_box = self.notebook.get_tab_label(target_root)
             if tab_box:
                 # Hide the profile icon widget (second child, between dot and label).
