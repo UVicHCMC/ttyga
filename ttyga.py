@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.51"
+APP_VERSION = "0.6.52"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -87,6 +87,10 @@ DEFAULT_SETTINGS = {
 
 WIN_DEFAULT_W    = 1100   # main window
 WIN_DEFAULT_H    = 700
+LAYOUT_W         = 640    # Edit Layout dialog
+LAYOUT_H         = 620
+LAYOUT_PANE_MIN  = 64     # smallest preview pane, pixels
+
 EDITOR_W         = 1000   # Edit Profiles dialog
 EDITOR_H         = 1160   # tall enough for the whole form plus a couple of
                           # variable rows without scrolling; clamped to the
@@ -533,6 +537,22 @@ headerbar splitbutton image {{
 }}
 .profile-row.active image {{ color: {t['accent_fg']}; }}
 
+/* Layout editor preview panes. term_bg so a pane reads as a miniature
+   terminal rather than as a button. */
+.layout-pane {{
+    background: {t['term_bg']};
+    color: {t['fg_dim']};
+    border: 1px solid {t['border']};
+    border-radius: 4px;
+    padding: 6px;
+}}
+.layout-pane:hover {{ background: {t['row_hover']}; }}
+.layout-pane.selected {{
+    background: {t['row_active']};
+    border: 2px solid {t['accent']};
+    color: {t['fg']};
+}}
+
 /* A background tab ringing the BEL pulses its profile's sidebar row, in the
    same term_warn as the tab flash and on the same 1.2s beat, so "wants
    attention" never reads as the accent-coloured "currently on screen".
@@ -977,6 +997,268 @@ class VariablePromptDialog(Adw.Window):
         self.close()
 
 
+# Layout editor
+# ---------------------------------------------------------------------------
+
+class LayoutEditorDialog(Adw.Window):
+    """Visual editor for a profile's `layout:` pane tree.
+
+    Edits the same nested dict the launcher consumes, so there is no
+    intermediate representation to keep in sync:
+
+        split node   {'split': 'horizontal'|'vertical', 'start': …, 'end': …}
+        leaf         {'command': str, 'cwd': str, 'auto_execute': bool}
+        plain shell  {}
+
+    The selection is held as a *path* of 'start'/'end' keys rather than as a
+    widget or node reference, so it survives the preview being torn down and
+    rebuilt after every structural change — which is how the preview stays
+    honest without any incremental-update logic.
+    """
+
+    def __init__(self, parent, layout, on_apply):
+        super().__init__(title="Edit Layout", transient_for=parent, modal=True)
+        self.add_css_class('elevated-window')
+        self._on_apply = on_apply
+        self._layout = copy.deepcopy(layout) if layout else {}
+        self._sel = self._first_leaf_suffix(self._layout)
+        self._loading = False
+        self.set_default_size(LAYOUT_W, LAYOUT_H)
+
+        toolbar = Adw.ToolbarView()
+        self.set_content(toolbar)
+
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class('flat')
+        cancel_btn.connect('clicked', lambda _b: self.close())
+        header.pack_start(cancel_btn)
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.add_css_class('suggested-action')
+        apply_btn.connect('clicked', self._on_apply_clicked)
+        header.pack_end(apply_btn)
+        toolbar.add_top_bar(header)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        outer.set_margin_top(16)
+        outer.set_margin_bottom(16)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
+        toolbar.set_content(outer)
+
+        hint = Gtk.Label(
+            label="Click a pane to select it. The layout opens as one tab "
+                  "when the profile is launched, and overrides Shell split.",
+            xalign=0, wrap=True)
+        hint.add_css_class('dim-label')
+        hint.add_css_class('caption')
+        outer.append(hint)
+
+        self._preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._preview_box.set_vexpand(True)
+        outer.append(self._preview_box)
+
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        split_h_btn = Gtk.Button(label="Split beside")
+        split_h_btn.set_tooltip_text("Split the selected pane left / right")
+        split_h_btn.connect('clicked', lambda _b: self._split_selected('horizontal'))
+        split_v_btn = Gtk.Button(label="Split below")
+        split_v_btn.set_tooltip_text("Split the selected pane top / bottom")
+        split_v_btn.connect('clicked', lambda _b: self._split_selected('vertical'))
+        self._remove_btn = Gtk.Button(label="Remove pane")
+        self._remove_btn.add_css_class('destructive-action')
+        self._remove_btn.connect('clicked', lambda _b: self._remove_selected())
+        btn_bar.append(split_h_btn)
+        btn_bar.append(split_v_btn)
+        btn_bar.append(self._remove_btn)
+        outer.append(btn_bar)
+
+        outer.append(Gtk.Separator())
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(10)
+        grid.set_column_spacing(14)
+
+        self.cmd_entry = Gtk.Entry(hexpand=True)
+        self.cmd_entry.set_placeholder_text("leave empty for a plain shell")
+        self.cmd_entry.connect('changed', self._on_field_changed)
+
+        self.cwd_entry = Gtk.Entry(hexpand=True)
+        self.cwd_entry.set_placeholder_text("optional — inherits the profile's working dir")
+        self.cwd_entry.connect('changed', self._on_field_changed)
+
+        self.auto_switch = Gtk.Switch()
+        self.auto_switch.set_halign(Gtk.Align.START)
+        self.auto_switch.set_valign(Gtk.Align.CENTER)
+        self.auto_switch.set_tooltip_text(
+            "Run the command immediately, rather than typing it at the prompt")
+        self.auto_switch.connect('notify::active', self._on_field_changed)
+
+        for i, (text, widget) in enumerate((("Command", self.cmd_entry),
+                                            ("Working dir", self.cwd_entry),
+                                            ("Auto-execute", self.auto_switch))):
+            label = Gtk.Label(label=text)
+            label.set_halign(Gtk.Align.END)
+            label.add_css_class('dim-label')
+            label.set_size_request(100, -1)
+            grid.attach(label, 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+        outer.append(grid)
+
+        self._refresh()
+
+    # ----- tree helpers ------------------------------------------------------
+
+    @staticmethod
+    def _is_split(node):
+        return bool(node) and 'split' in node
+
+    def _first_leaf_suffix(self, node):
+        """Path from `node` down to its first leaf — always 'start' branches."""
+        suffix = []
+        while self._is_split(node):
+            node = node.get('start') or {}
+            suffix.append('start')
+        return suffix
+
+    def _node_at(self, path):
+        node = self._layout
+        for key in path:
+            node = (node or {}).get(key) or {}
+        return node
+
+    def _set_node_at(self, path, new_node):
+        if not path:
+            self._layout = new_node
+            return
+        parent = self._layout
+        for key in path[:-1]:
+            parent = parent.setdefault(key, {})
+        parent[path[-1]] = new_node
+
+    def _pane_count(self, node=None):
+        node = self._layout if node is None else node
+        if self._is_split(node):
+            return (self._pane_count(node.get('start') or {}) +
+                    self._pane_count(node.get('end') or {}))
+        return 1
+
+    # ----- structural edits --------------------------------------------------
+
+    def _split_selected(self, orientation):
+        leaf = self._node_at(self._sel)
+        if self._is_split(leaf):
+            return                      # only leaves are selectable
+        self._set_node_at(self._sel,
+                          {'split': orientation, 'start': leaf, 'end': {}})
+        self._sel = self._sel + ['end']     # select the new empty pane
+        self._refresh()
+
+    def _remove_selected(self):
+        if not self._sel:
+            # Removing the only pane clears the layout entirely; Apply then
+            # writes no layout: key at all.
+            self._layout = {}
+            self._sel = []
+            self._refresh()
+            return
+        parent_path, key = self._sel[:-1], self._sel[-1]
+        parent = self._node_at(parent_path)
+        sibling = parent.get('end' if key == 'start' else 'start') or {}
+        self._set_node_at(parent_path, sibling)
+        self._sel = parent_path + self._first_leaf_suffix(sibling)
+        self._refresh()
+
+    # ----- rendering ---------------------------------------------------------
+
+    def _refresh(self):
+        self._refresh_preview()
+        self._load_fields()
+        self._remove_btn.set_sensitive(self._pane_count() > 1 or bool(self._layout))
+
+    def _refresh_preview(self):
+        while (child := self._preview_box.get_first_child()):
+            self._preview_box.remove(child)
+        self._preview_box.append(self._render(self._layout, []))
+
+    def _render(self, node, path):
+        if self._is_split(node):
+            orientation = (Gtk.Orientation.HORIZONTAL
+                           if str(node['split']).lower() == 'horizontal'
+                           else Gtk.Orientation.VERTICAL)
+            box = Gtk.Box(orientation=orientation, spacing=4, homogeneous=True)
+            box.append(self._render(node.get('start') or {}, path + ['start']))
+            box.append(self._render(node.get('end') or {}, path + ['end']))
+            return box
+
+        node = node or {}
+        cmd = (node.get('command') or '').strip()
+        label = Gtk.Label(label=cmd or "(shell)", wrap=True,
+                          ellipsize=Pango.EllipsizeMode.END, lines=3)
+        if not cmd:
+            label.add_css_class('dim-label')
+
+        btn = Gtk.Button(child=label, hexpand=True, vexpand=True)
+        btn.add_css_class('layout-pane')
+        btn.set_size_request(LAYOUT_PANE_MIN, LAYOUT_PANE_MIN)
+        if path == self._sel:
+            btn.add_css_class('selected')
+        cwd = (node.get('cwd') or '').strip()
+        if cwd:
+            btn.set_tooltip_text(f"cwd: {cwd}")
+        btn.connect('clicked', lambda _b, p=path: self._select(p))
+        return btn
+
+    def _select(self, path):
+        self._sel = path
+        self._refresh()
+
+    # ----- the selected pane's fields ---------------------------------------
+
+    def _load_fields(self):
+        node = self._node_at(self._sel) or {}
+        self._loading = True
+        self.cmd_entry.set_text(node.get('command') or '')
+        self.cwd_entry.set_text(node.get('cwd') or '')
+        self.auto_switch.set_active(node.get('auto_execute', True))
+        self._loading = False
+
+    def _on_field_changed(self, *_args):
+        if self._loading:
+            return
+        node = self._node_at(self._sel)
+        if self._is_split(node):
+            return
+        cmd = self.cmd_entry.get_text().strip()
+        cwd = self.cwd_entry.get_text().strip()
+        auto = self.auto_switch.get_active()
+
+        new_node = {}
+        if cmd:
+            new_node['command'] = cmd
+            # auto_execute defaults to True in the launcher, so only record it
+            # when it differs — keeps hand-written layouts from growing noise.
+            if not auto:
+                new_node['auto_execute'] = False
+        if cwd:
+            new_node['cwd'] = cwd
+        self._set_node_at(self._sel, new_node)
+        # Only the preview needs redrawing — reloading the fields here would
+        # reset the cursor on every keystroke.
+        self._refresh_preview()
+
+    def _on_apply_clicked(self, _btn):
+        layout = self._layout
+        # A single empty pane is indistinguishable from having no layout at
+        # all, so emit None and let the caller drop the key.
+        if not self._is_split(layout) and not (layout or {}).get('command'):
+            layout = None
+        self._on_apply(layout)
+        self.close()
+
+
 # Edit Profiles window
 # ---------------------------------------------------------------------------
 
@@ -1310,6 +1592,21 @@ class EditorWindow(Adw.Window):
         self.notify_text_entry.set_placeholder_text("e.g. Claude is waiting  (optional)")
         self._attach(launch_grid, 3, "Notification text", self.notify_text_entry)
 
+        # Layout — a pane tree opened as one tab. Type-agnostic (the launcher
+        # spawns local shells for every pane), so it lives here rather than in
+        # the clippet-only stack alongside Shell split, which it overrides.
+        self._layout = None
+        layout_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.layout_summary = Gtk.Label(xalign=0, hexpand=True)
+        self.layout_summary.add_css_class('dim-label')
+        layout_edit_btn = Gtk.Button(label="Edit…")
+        layout_edit_btn.add_css_class('flat')
+        layout_edit_btn.set_valign(Gtk.Align.CENTER)
+        layout_edit_btn.connect('clicked', self._on_layout_edit)
+        layout_box.append(self.layout_summary)
+        layout_box.append(layout_edit_btn)
+        self._attach(launch_grid, 4, "Layout", layout_box)
+
         self.form_box.append(launch_grid)
 
         form_scroll.set_child(self.form_box)
@@ -1406,6 +1703,28 @@ class EditorWindow(Adw.Window):
         grid.attach(label, 0, row, 1, 1)
         widget.set_hexpand(True)
         grid.attach(widget, 1, row, 1, 1)
+
+    # ----- layout ------------------------------------------------------------
+
+    def _on_layout_edit(self, _btn):
+        def on_apply(layout):
+            self._layout = layout
+            self._update_layout_summary()
+        LayoutEditorDialog(self, self._layout, on_apply).present()
+
+    def _update_layout_summary(self):
+        if not self._layout:
+            self.layout_summary.set_label("None")
+            return
+        panes = self._count_layout_panes(self._layout)
+        self.layout_summary.set_label(
+            f"{panes} pane{'s' if panes != 1 else ''}")
+
+    def _count_layout_panes(self, node):
+        if node and 'split' in node:
+            return (self._count_layout_panes(node.get('start') or {}) +
+                    self._count_layout_panes(node.get('end') or {}))
+        return 1
 
     # ----- variables editor --------------------------------------------------
 
@@ -1771,6 +2090,9 @@ class EditorWindow(Adw.Window):
 
         self._load_vars(p.get('variables'))
 
+        self._layout = copy.deepcopy(p.get('layout')) if p.get('layout') else None
+        self._update_layout_summary()
+
         self.cwd_entry.set_text(p.get('cwd', ''))
         self.notify_text_entry.set_text(p.get('notify_text', ''))
         env_dict = p.get('env') or {}
@@ -1847,6 +2169,11 @@ class EditorWindow(Adw.Window):
             p['variables'] = variables
         else:
             p.pop('variables', None)
+
+        if self._layout:
+            p['layout'] = self._layout
+        else:
+            p.pop('layout', None)
 
         cwd = self.cwd_entry.get_text().strip()
         if cwd:
