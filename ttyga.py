@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.50"
+APP_VERSION = "0.6.51"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -87,8 +87,10 @@ DEFAULT_SETTINGS = {
 
 WIN_DEFAULT_W    = 1100   # main window
 WIN_DEFAULT_H    = 700
-EDITOR_W         = 760    # Edit Profiles dialog
-EDITOR_H         = 540
+EDITOR_W         = 1000   # Edit Profiles dialog
+EDITOR_H         = 1160   # tall enough for the whole form plus a couple of
+                          # variable rows without scrolling; clamped to the
+                          # monitor work area by EditorWindow._fit_to_monitor
 PREFS_W          = 640    # Preferences dialog
 PREFS_H          = 560
 
@@ -988,7 +990,7 @@ class EditorWindow(Adw.Window):
         self.current_row = None
         self._loading = False
 
-        self.set_default_size(EDITOR_W, EDITOR_H)
+        self.set_default_size(*self._fit_to_monitor(EDITOR_W, EDITOR_H))
 
         # Snapshot for editing so Cancel discards changes.
         config = app.load_config()
@@ -1038,6 +1040,7 @@ class EditorWindow(Adw.Window):
         prof_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         prof_scroll.set_vexpand(True)
 
+        self.prof_scroll = prof_scroll
         self.listbox = Gtk.ListBox()
         self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.listbox.connect("row-selected", self._on_row_selected)
@@ -1236,6 +1239,40 @@ class EditorWindow(Adw.Window):
 
         self.form_box.append(Gtk.Separator())
 
+        # Variables — prompted for at launch, then substituted into the
+        # command, host/user/port and classifier title wherever @name appears.
+        # Full width rather than in a labelled grid: three fields per row do
+        # not fit beside the 120px label column.
+        vars_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        vars_head = Gtk.Label(label="Variables", xalign=0)
+        vars_head.add_css_class('dim-label')
+        vars_box.append(vars_head)
+
+        vars_hint = Gtk.Label(
+            label="Prompted for at launch. Reference one as @name in the "
+                  "command, host, user, port or classifier title.",
+            xalign=0, wrap=True)
+        vars_hint.add_css_class('dim-label')
+        vars_hint.add_css_class('caption')
+        vars_box.append(vars_hint)
+
+        self._var_rows = []
+        self._vars_grid = Gtk.Grid()
+        self._vars_grid.set_row_spacing(6)
+        self._vars_grid.set_column_spacing(6)
+        vars_box.append(self._vars_grid)
+
+        add_var_btn = Gtk.Button(label="Add variable")
+        add_var_btn.add_css_class('flat')
+        add_var_btn.set_halign(Gtk.Align.START)
+        add_var_btn.connect('clicked', lambda _b: self._add_var_row(focus=True))
+        vars_box.append(add_var_btn)
+
+        self.form_box.append(vars_box)
+
+        self.form_box.append(Gtk.Separator())
+
         # Launch settings (cwd + env)
         launch_grid = self._new_grid()
         self.cwd_entry = Gtk.Entry()
@@ -1294,6 +1331,64 @@ class EditorWindow(Adw.Window):
             target = self.listbox.get_row_at_index(0)
         if target:
             self.listbox.select_row(target)
+            # Nothing is allocated yet at construction time, so the scroll has
+            # to wait until the window is on screen.
+            self.connect('map', lambda _w: self._scroll_row_into_view(
+                self.listbox.get_selected_row()))
+
+    def _fit_to_monitor(self, width, height):
+        """Clamp a requested default size to the monitor's usable area.
+
+        EDITOR_H is deliberately large enough to show the whole form without
+        scrolling; on a smaller display that would be taller than the screen.
+        Prefers the monitor the main window is on, so on a mixed multi-head
+        setup the editor is sized for the screen it will actually appear on.
+        """
+        try:
+            display = Gdk.Display.get_default()
+            monitor = None
+            surface = self.app.window.get_surface() if self.app.window else None
+            if surface is not None:
+                monitor = display.get_monitor_at_surface(surface)
+            if monitor is None:
+                monitor = display.get_monitors().get_item(0)
+            geo = monitor.get_geometry()
+            # 90% leaves room for the top bar and dock without needing to know
+            # where either of them is.
+            return (min(width, int(geo.width * 0.9)),
+                    min(height, int(geo.height * 0.9)))
+        except Exception:
+            return width, height
+
+    def _scroll_row_into_view(self, row):
+        """Bring a profile row into view — GtkListBox has no scroll-to-row.
+
+        Nudges the scrolled window's adjustment using the row's own bounds,
+        and only when the row is actually outside the visible range, so
+        clicking an already-visible row never jumps the list.
+        """
+        if row is None:
+            return
+
+        def _scroll():
+            ok, rect = row.compute_bounds(self.listbox)
+            adj = self.prof_scroll.get_vadjustment()
+            page = adj.get_page_size()
+            if not ok or page <= 0:
+                return False        # not allocated yet; nothing sensible to do
+            top = rect.origin.y
+            bottom = top + rect.size.height
+            if top < adj.get_value():
+                adj.set_value(top)
+            elif bottom > adj.get_value() + page:
+                adj.set_value(bottom - page)
+            return False
+
+        # Double idle at low priority, for the same reason as the terminal
+        # focus grabs: a single idle can still land before GTK has finished
+        # allocating, and an unallocated row measures as zero.
+        GLib.idle_add(lambda: GLib.idle_add(_scroll, priority=GLib.PRIORITY_LOW)
+                      and False)
 
     def _new_grid(self):
         grid = Gtk.Grid()
@@ -1311,6 +1406,98 @@ class EditorWindow(Adw.Window):
         grid.attach(label, 0, row, 1, 1)
         widget.set_hexpand(True)
         grid.attach(widget, 1, row, 1, 1)
+
+    # ----- variables editor --------------------------------------------------
+
+    def _add_var_row(self, name='', prompt='', default='', focus=False):
+        """Append one variable row. Widgets are kept in self._var_rows and the
+        grid is rebuilt from that list, so removal needs no index bookkeeping."""
+        name_entry = Gtk.Entry(hexpand=True, placeholder_text="name")
+        prompt_entry = Gtk.Entry(hexpand=True,
+                                 placeholder_text="prompt at launch (optional)")
+        default_entry = Gtk.Entry(hexpand=True,
+                                  placeholder_text="default (optional)")
+        name_entry.set_text(name)
+        prompt_entry.set_text(prompt)
+        default_entry.set_text(default)
+
+        remove_btn = Gtk.Button(icon_name='list-remove-symbolic')
+        remove_btn.add_css_class('flat')
+        remove_btn.set_valign(Gtk.Align.CENTER)
+        remove_btn.set_tooltip_text("Remove this variable")
+
+        entry_row = (name_entry, prompt_entry, default_entry, remove_btn)
+        remove_btn.connect('clicked', lambda _b, r=entry_row: self._remove_var_row(r))
+        self._var_rows.append(entry_row)
+        self._rebuild_vars_grid()
+        if focus:
+            name_entry.grab_focus()
+
+    def _remove_var_row(self, entry_row):
+        if entry_row in self._var_rows:
+            self._var_rows.remove(entry_row)
+            self._rebuild_vars_grid()
+
+    def _rebuild_vars_grid(self):
+        while (child := self._vars_grid.get_first_child()):
+            self._vars_grid.remove(child)
+
+        if not self._var_rows:
+            return      # no header over an empty list
+
+        for col, text in enumerate(("Name", "Prompt", "Default")):
+            hdr = Gtk.Label(label=text, xalign=0)
+            hdr.add_css_class('dim-label')
+            hdr.add_css_class('caption')
+            self._vars_grid.attach(hdr, col, 0, 1, 1)
+
+        for i, (name_e, prompt_e, default_e, remove_b) in enumerate(self._var_rows, start=1):
+            self._vars_grid.attach(name_e, 0, i, 1, 1)
+            self._vars_grid.attach(prompt_e, 1, i, 1, 1)
+            self._vars_grid.attach(default_e, 2, i, 1, 1)
+            self._vars_grid.attach(remove_b, 3, i, 1, 1)
+
+    def _load_vars(self, variables):
+        """Fill the rows from a profile's variables dict.
+
+        Accepts both forms the launcher understands: a dict of
+        {prompt, default}, or a bare scalar that is just the default.
+        """
+        self._var_rows = []
+        for var_name, var_def in (variables or {}).items():
+            if isinstance(var_def, dict):
+                self._add_var_row(var_name,
+                                  var_def.get('prompt', ''),
+                                  str(var_def.get('default', '')))
+            else:
+                self._add_var_row(var_name, '',
+                                  '' if var_def is None else str(var_def))
+        self._rebuild_vars_grid()
+
+    def _collect_vars(self):
+        """Rows -> the variables dict, or None when there is nothing to write.
+
+        Emits the scalar shorthand when a variable has no prompt of its own,
+        so hand-written configs keep their shape instead of being rewritten
+        into the long form on every save. Insertion order is preserved and
+        _on_save dumps with sort_keys=False, so the launch dialog keeps
+        prompting in the order set here.
+        """
+        out = {}
+        for name_e, prompt_e, default_e, _btn in self._var_rows:
+            name = name_e.get_text().strip()
+            if not name:
+                continue        # unnamed row — nothing to substitute for
+            prompt = prompt_e.get_text().strip()
+            default = default_e.get_text()
+            if prompt:
+                entry = {'prompt': prompt}
+                if default:
+                    entry['default'] = default
+                out[name] = entry
+            else:
+                out[name] = default
+        return out or None
 
     def _sort_profiles(self, row_a, row_b):
         a, b = row_a.profile, row_b.profile
@@ -1551,6 +1738,7 @@ class EditorWindow(Adw.Window):
         self.current_profile = row.profile
         self.current_row = row
         self._load_form(row)
+        self._scroll_row_into_view(row)
 
     def _load_form(self, row):
         p = row.profile
@@ -1580,6 +1768,8 @@ class EditorWindow(Adw.Window):
 
         classifier = p.get('classifier') or {}
         self.classifier_entry.set_text(classifier.get('title', ''))
+
+        self._load_vars(p.get('variables'))
 
         self.cwd_entry.set_text(p.get('cwd', ''))
         self.notify_text_entry.set_text(p.get('notify_text', ''))
@@ -1651,6 +1841,12 @@ class EditorWindow(Adw.Window):
             p['classifier'] = {'title': title}
         else:
             p.pop('classifier', None)
+
+        variables = self._collect_vars()
+        if variables:
+            p['variables'] = variables
+        else:
+            p.pop('variables', None)
 
         cwd = self.cwd_entry.get_text().strip()
         if cwd:
