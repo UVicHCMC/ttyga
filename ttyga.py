@@ -44,8 +44,17 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.53"
+APP_VERSION = "0.6.54"
 APP_AUTHOR  = "greg"
+
+# Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
+# separator's drag grab zone extends into the neighbouring pane and wins the
+# pointer sequence ahead of the terminal's selection gesture, so without this
+# the first character of a line next to a separator cannot be selected. A GTK
+# margin works where CSS padding does not: margin space sits outside the widget
+# allocation, whereas VTE 0.76 shifts glyphs for padding but still maps mouse
+# coordinates as if it were not there. Applied per-edge by _update_pane_margins.
+PANE_GUTTER = 12
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
 _LOCAL_HOST = socket.gethostname()
@@ -474,12 +483,23 @@ def _rgba(hex_or_rgba):
     return rgba
 
 
+def _rgba_css(hex_or_rgba, alpha):
+    """A theme colour as a CSS rgba() string at the given alpha.
+
+    Parsed via Gdk.RGBA rather than by slicing the hex, so it accepts every
+    form THEMES already uses — #rgb, #rrggbb and rgba(...) alike.
+    """
+    c = _rgba(hex_or_rgba)
+    return (f"rgba({round(c.red * 255)},{round(c.green * 255)},"
+            f"{round(c.blue * 255)},{alpha:.3f})")
+
+
 # ---------------------------------------------------------------------------
 # CSS — generated per-theme. We layer a single provider above libadwaita's
 # defaults and swap its content when the user changes themes.
 # ---------------------------------------------------------------------------
 
-def _bg_image_css(bg_image_path, bg_fit):
+def _bg_image_css(bg_image_path, bg_fit, term_bg, bg_opacity):
     """CSS for the background-image feature, or '' when no image is set.
 
     Deliberately returns nothing at all when bg_image_path is empty, rather
@@ -488,13 +508,23 @@ def _bg_image_css(bg_image_path, bg_fit):
 
     The image lives on .tab-root (one picture per tab, each pane a window
     onto it — not .pane-box, which would give every pane its own
-    independently cover-scaled crop that jumps on every split). Two more
-    rules ride along, verified together as one recipe: .pane-box must go
-    transparent for the image to show through it, and vte-terminal needs an
-    explicit transparent override or the widget's own CSS background paints
-    over everything regardless of set_clear_background() or set_colors()
-    alpha — GTK4 VTE 0.76 does not composite through either of those without
-    this rule also being present.
+    independently cover-scaled crop that jumps on every split).
+
+    ONE DIMMER, NOT TWO (0.6.54). .pane-box carries the tint, at exactly the
+    alpha the terminal used to carry, and the terminal's own background goes
+    fully transparent (see _apply_terminal_colors). Both the text area and
+    the margin "gutter" around it are therefore dimmed by the same single
+    layer, so they match at any bg_opacity with no arithmetic to keep in
+    sync. 0.6.53 instead left .pane-box transparent, which showed the image
+    at FULL strength in the gutter against 25% in the text area — a bright
+    frame around every pane. Note the obvious repair (tint .pane-box to
+    match the terminal) does NOT work: the terminal paints over the pane-box,
+    so both tints apply in the text area and the mismatch simply inverts.
+
+    vte-terminal still needs the explicit transparent override or the
+    widget's own CSS background paints over everything regardless of
+    set_clear_background() or set_colors() alpha — GTK4 VTE 0.76 does not
+    composite through either of those without this rule also present.
     """
     if not bg_image_path:
         return ''
@@ -512,7 +542,7 @@ def _bg_image_css(bg_image_path, bg_fit):
     background-repeat: no-repeat;
 }}
 .pane-box {{
-    background: transparent;
+    background: {_rgba_css(term_bg, bg_opacity)};
 }}
 vte-terminal {{
     background-color: transparent;
@@ -521,7 +551,7 @@ vte-terminal {{
 """
 
 
-def build_css(theme, ssh_color='', bg_image_path='', bg_fit='cover'):
+def build_css(theme, ssh_color='', bg_image_path='', bg_fit='cover', bg_opacity=1.0):
     t = THEMES[theme]
     is_dark = theme in DARK_LIKE
     return f"""
@@ -855,7 +885,7 @@ popover > contents button.flat:hover {{
     font-style: italic;
 }}
 
-{_bg_image_css(bg_image_path, bg_fit)}
+{_bg_image_css(bg_image_path, bg_fit, t['term_bg'], bg_opacity)}
 """
 
 
@@ -3084,7 +3114,9 @@ class DevFrame(Adw.Application):
         self.css_provider.load_from_data(
             build_css(theme, self.settings.get('ssh_color', ''),
                      bg_image_path=self.settings.get('bg_image_path', ''),
-                     bg_fit=self.settings.get('bg_fit', 'cover')).encode('utf-8'))
+                     bg_fit=self.settings.get('bg_fit', 'cover'),
+                     bg_opacity=float(self.settings.get(
+                         'bg_opacity', DEFAULT_SETTINGS['bg_opacity']))).encode('utf-8'))
 
         # Theme class on the window mirrors what the HTML mock did with
         # .theme-light/.theme-dark/.theme-nord on its root. Useful as a hook
@@ -3107,11 +3139,17 @@ class DevFrame(Adw.Application):
         # Background image feature: only touch clear_background/alpha when an
         # image is actually configured, so a terminal with no image set is
         # byte-for-byte the same call as before this feature existed.
+        #
+        # With an image, the terminal goes FULLY transparent and .pane-box
+        # below it carries the bg_opacity tint instead (see _bg_image_css).
+        # One dimming layer covers the text area and the surrounding gutter
+        # alike, so they cannot drift apart; dimming in both places stacks in
+        # the text area only, which is what made the gutter glow in 0.6.53.
         bg_image_path = self.settings.get('bg_image_path', '')
         terminal.set_clear_background(bool(bg_image_path))
         bg = _rgba(t['term_bg'])
         if bg_image_path:
-            bg.alpha = float(self.settings.get('bg_opacity', DEFAULT_SETTINGS['bg_opacity']))
+            bg.alpha = 0.0
 
         terminal.set_colors(_rgba(t['term_fg']), bg, _vte_palette(theme))
 
@@ -4020,14 +4058,14 @@ class DevFrame(Adw.Application):
         terminal = Vte.Terminal()
         terminal.set_hexpand(True)
         terminal.set_vexpand(True)
-        # Inset the terminal's left/right/bottom edges so they clear an
-        # adjacent Gtk.Paned separator's drag grab zone, which otherwise
-        # steals clicks meant for text selection. No top margin needed —
-        # the pane-bar above every terminal already buffers that edge.
+        # Start inset on all three edges; _update_pane_margins trims it back to
+        # only the edges that abut a separator once the terminal is parented.
+        # Erring inset-first keeps the selection bug fixed even if some future
+        # pane-construction path forgets to call _update_pane_bars.
         # Applied to the terminal (not the pane-box) so the pane-bar stays flush.
-        terminal.set_margin_start(12)
-        terminal.set_margin_end(12)
-        terminal.set_margin_bottom(12)
+        terminal.set_margin_start(PANE_GUTTER)
+        terminal.set_margin_end(PANE_GUTTER)
+        terminal.set_margin_bottom(PANE_GUTTER)
 
         font_str = ((profile.get('terminal_font') if profile else None) or
                     self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
@@ -4370,6 +4408,42 @@ class DevFrame(Adw.Application):
             bar = self.tabs.get(t, {}).get('pane_bar')
             if bar:
                 bar.set_visible(show)
+            self._update_pane_margins(t)
+
+    def _update_pane_margins(self, terminal):
+        """Inset only the edges that actually abut a Gtk.Paned separator.
+
+        The separator's drag grab zone reaches into the adjacent pane and
+        steals clicks meant for text selection, so a terminal touching one
+        needs to stand clear of it (see PANE_GUTTER). Every other edge —
+        every edge of a single-pane tab, and the outer edges of a split —
+        costs screen space for nothing, and under a background image the
+        un-dimmed gutter is visible. No top margin ever: the pane-bar
+        already buffers that edge.
+
+        Walking every ancestor Paned, not just the immediate one, is exact.
+        A leaf that does not reach the right boundary of a start-child
+        subtree only fails to because something sits to its right within
+        that subtree — which means a nearer separator already earned it the
+        same margin.
+        """
+        start = end = bottom = 0
+        child  = terminal.get_parent()          # pane-box
+        parent = child.get_parent() if child else None
+        while parent is not None:
+            if isinstance(parent, Gtk.Paned):
+                is_start = parent.get_start_child() is child
+                if parent.get_orientation() == Gtk.Orientation.HORIZONTAL:
+                    if is_start:
+                        end = PANE_GUTTER
+                    else:
+                        start = PANE_GUTTER
+                elif is_start:
+                    bottom = PANE_GUTTER
+            child, parent = parent, parent.get_parent()
+        terminal.set_margin_start(start)
+        terminal.set_margin_end(end)
+        terminal.set_margin_bottom(bottom)
 
     def _on_pane_close_clicked(self, btn, terminal):
         meta = self.tabs.get(terminal)

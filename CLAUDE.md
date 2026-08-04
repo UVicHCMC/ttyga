@@ -73,6 +73,16 @@ tab_root (Gtk.Box, hexpand+vexpand)
 - `spawn_dir` — the directory the terminal was launched from (fallback for cwd when OSC 7 is unavailable)
 - `pane_bar` — the `Gtk.Box` header strip above the terminal; hidden when only one pane
 
+`_update_pane_bars(tab_root)` is the single hook run at every structural change (restore, both `add_tab` paths, split, close, merge). It shows/hides the pane bars **and** calls `_update_pane_margins()` per terminal.
+
+### The pane gutter (`PANE_GUTTER`)
+
+A `Gtk.Paned` separator's drag grab zone extends *into* the adjacent pane and claims the pointer sequence before the terminal's selection gesture sees it — so the first character of a line next to a separator can't be selected. The fix is a 12px GTK margin on the terminal, applied **only to edges that actually abut a separator**: `_update_pane_margins()` walks every ancestor `Gtk.Paned` and sets `margin_start` / `margin_end` / `margin_bottom` accordingly. A single-pane tab gets none. There is never a top margin — the pane-bar buffers that edge.
+
+Two things not to re-derive:
+- **CSS padding does not work.** VTE 0.76 shifts glyphs but still maps mouse coordinates as if the padding weren't there, so clicks land on the wrong cell. A margin works because margin space is outside the widget allocation. Do not retry CSS.
+- Walking *all* ancestors, not just the immediate parent, is exact — a leaf that doesn't reach a subtree's boundary only fails to because a nearer separator already earned it the same margin.
+
 ### Key methods in DevFrame
 
 | Method | What it does |
