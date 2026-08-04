@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.48"
+APP_VERSION = "0.6.49"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -105,6 +105,17 @@ CLOCK_DATE_MIN_PX = 10    # sidebar clock: smallest date font size, pixels
 CLOCK_DATE_MAX_PX = 22    # sidebar clock: largest date font size, pixels
 
 PROFILE_ICON_PX  = 24     # sidebar profile button icon size
+
+def _blend(hex_a, hex_b, t):
+    """Composite hex_b over hex_a at opacity t, returning an opaque #rrggbb.
+
+    Used where a CSS animation has to end up at a *specific* colour rather
+    than a translucent overlay — keyframes replace the property outright, so
+    "accent with a wash of term_warn over it" has to be precomputed.
+    """
+    a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#%02x%02x%02x' % tuple(round(x * (1 - t) + y * t) for x, y in zip(a, b))
 
 def _is_gtk_icon(s):
     """True if s looks like a GTK icon name (pure ASCII, lowercase/digits/hyphens)."""
@@ -530,6 +541,40 @@ headerbar splitbutton image {{
     color: {t['accent_fg']};
 }}
 .profile-row.active image {{ color: {t['accent_fg']}; }}
+
+/* A background tab ringing the BEL pulses its profile's sidebar row, in the
+   same term_warn as the tab flash and on the same 1.2s beat, so "wants
+   attention" never reads as the accent-coloured "currently on screen".
+
+   Animating background-color deliberately, matching .tab-activity below —
+   an inset box-shadow would layer over the row's existing background instead
+   of replacing it, but nothing here confirms GTK4 animates box-shadow, and
+   background-color is the one this app already demonstrably animates.
+
+   The cost of replacing rather than layering: a row that is also .active
+   would be animated down to transparent, losing its accent fill. That
+   happens whenever a second tab hosts the same profile and is on screen
+   while this one rings. Hence the .active.attention variant, which pulses
+   between accent and accent-with-term_warn-washed-over-it (precomputed,
+   because keyframes need a literal colour, not an overlay). */
+/* Each stop gets its own block: GTK4's CSS parser rejects a comma-separated
+   keyframe selector — writing 0% and 100% as one stop fails to parse. */
+@keyframes sidebar-attention {{
+    0%   {{ background-color: transparent; }}
+    50%  {{ background-color: rgba({int(t['term_warn'][1:3],16)},{int(t['term_warn'][3:5],16)},{int(t['term_warn'][5:7],16)},0.28); }}
+    100% {{ background-color: transparent; }}
+}}
+@keyframes sidebar-attention-active {{
+    0%   {{ background-color: {t['accent']}; }}
+    50%  {{ background-color: {_blend(t['accent'], t['term_warn'], 0.45)}; }}
+    100% {{ background-color: {t['accent']}; }}
+}}
+.profile-row.attention {{
+    animation: sidebar-attention 1.2s ease-in-out infinite;
+}}
+.profile-row.active.attention {{
+    animation: sidebar-attention-active 1.2s ease-in-out infinite;
+}}
 
 /* Tabs -------------------------------------------------------------------- */
 
@@ -3393,6 +3438,7 @@ class DevFrame(Adw.Application):
         self._notified_roots.discard(tab_root)
         self._update_launcher_badge(len(self._notified_roots))
 
+        self._clear_tab_attention(tab_root)
         self._update_sidebar_highlight(tab_root)
 
     def _update_sidebar_highlight(self, tab_root):
@@ -3424,6 +3470,39 @@ class DevFrame(Adw.Application):
             return
         self._update_sidebar_highlight(self.notebook.get_nth_page(page))
 
+    def _refresh_sidebar_attention(self):
+        """Pulse every sidebar row whose profile has a pane waiting on a BEL.
+
+        Derived from the per-pane `attention` flag each time rather than
+        tracked as its own set of buttons, which keeps it correct in the three
+        cases a button set would get wrong: a flagged pane being closed, two
+        tabs hosting the same profile (only one of them ringing), and
+        _build_sidebar() throwing away and rebuilding _profile_buttons."""
+        keys = set()
+        for m in self.tabs.values():
+            p = m.get('profile')
+            if m.get('attention') and p:
+                keys.add((p.get('name'), p.get('group', 'General')))
+
+        for btn, p in self._profile_buttons:
+            key = (p.get('name'), p.get('group', 'General'))
+            if key in keys:
+                btn.add_css_class('attention')
+            else:
+                btn.remove_css_class('attention')
+
+    def _clear_tab_attention(self, tab_root):
+        """The user has looked at this tab — drop the flag from all its panes.
+
+        Cleared per tab, not per pane: switching to a tab means you have seen
+        everything in it. The sidebar is then recomputed rather than having
+        classes removed directly, because another tab may still be ringing for
+        the same profile."""
+        for m in self.tabs.values():
+            if m.get('tab_root') is tab_root:
+                m.pop('attention', None)
+        self._refresh_sidebar_attention()
+
     def _on_terminal_focus(self, terminal, _param):
         if terminal.has_focus():
             self._active_terminal = terminal
@@ -3436,6 +3515,7 @@ class DevFrame(Adw.Application):
                     tab_box.remove_css_class('tab-activity')
             self._notified_roots.discard(meta.get('tab_root'))
             self._update_launcher_badge(len(self._notified_roots))
+            self._clear_tab_attention(meta.get('tab_root'))
 
     def _on_terminal_bell(self, terminal):
         """Fired on a BEL from the pty (e.g. Claude Code ringing the bell when
@@ -3455,6 +3535,11 @@ class DevFrame(Adw.Application):
             tab_box = dot.get_parent()
             if tab_box:
                 tab_box.add_css_class('tab-activity')
+        # Flag the ringing pane, not the tab: a merged tab hosts several
+        # profiles and only one of them is asking for attention. Panes with no
+        # profile (plain tabs) have no sidebar row, and fall out in the refresh.
+        meta['attention'] = True
+        self._refresh_sidebar_attention()
         # Desktop notification: once per episode, only when window is in the background.
         if not self._window_active and tab_root not in self._notified_roots:
             self._notified_roots.add(tab_root)
@@ -3907,6 +3992,10 @@ class DevFrame(Adw.Application):
             self.tabs.pop(t, None)
         if self._active_terminal not in self.tabs:
             self._active_terminal = None
+        # Not left to switch-page: removing a page *other* than the current one
+        # doesn't change the current child, so no switch-page is emitted and
+        # the closed tab's pulse would stay on its sidebar row forever.
+        self._refresh_sidebar_attention()
         self.notebook.remove_page(page_num)
         if last_tab:
             # switch-page won't fire when there are no pages left, so clear the
@@ -4102,6 +4191,7 @@ class DevFrame(Adw.Application):
 
         self.tabs.pop(terminal, None)
         self._refresh_sidebar_highlight()
+        self._refresh_sidebar_attention()
         self._active_terminal = self._first_terminal_in(sibling)
         if self._active_terminal:
             _at  = self._active_terminal
@@ -4514,6 +4604,10 @@ class DevFrame(Adw.Application):
             else:
                 self._build_expander_group(g_name, profiles,
                                            saved_expands.get(g_name, True), g_icon)
+
+        # The rows are brand new widgets, so any in-flight pulse was just
+        # thrown away with the old ones — re-apply it from the pane flags.
+        self._refresh_sidebar_attention()
 
     def _build_expander_group(self, g_name, profiles, expanded, g_icon=''):
         expander = Gtk.Expander()
