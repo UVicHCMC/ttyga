@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.52"
+APP_VERSION = "0.6.53"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -77,6 +77,10 @@ DEFAULT_SETTINGS = {
                                       # pane up on a non-zero/signal exit so the
                                       # error stays readable
     'restore_tabs':      True,
+    'bg_image_path':      '',         # path to an image behind terminal panes;
+                                      # empty = no background image (default look)
+    'bg_opacity':         0.75,       # terminal bg alpha over the image, 0.0-1.0
+    'bg_fit':             'cover',    # cover | contain | fill
     'welcome_image':     '',          # path to PNG/SVG; empty = monochrome icon
     'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
 }
@@ -475,7 +479,49 @@ def _rgba(hex_or_rgba):
 # defaults and swap its content when the user changes themes.
 # ---------------------------------------------------------------------------
 
-def build_css(theme, ssh_color=''):
+def _bg_image_css(bg_image_path, bg_fit):
+    """CSS for the background-image feature, or '' when no image is set.
+
+    Deliberately returns nothing at all when bg_image_path is empty, rather
+    than emitting inert rules — every terminal must be pixel-identical to
+    the no-image default until an image is actually configured.
+
+    The image lives on .tab-root (one picture per tab, each pane a window
+    onto it — not .pane-box, which would give every pane its own
+    independently cover-scaled crop that jumps on every split). Two more
+    rules ride along, verified together as one recipe: .pane-box must go
+    transparent for the image to show through it, and vte-terminal needs an
+    explicit transparent override or the widget's own CSS background paints
+    over everything regardless of set_clear_background() or set_colors()
+    alpha — GTK4 VTE 0.76 does not composite through either of those without
+    this rule also being present.
+    """
+    if not bg_image_path:
+        return ''
+    try:
+        uri = GLib.filename_to_uri(bg_image_path, None)
+    except GLib.Error:
+        return ''
+    size = {'cover': 'cover', 'contain': 'contain', 'fill': '100% 100%'}.get(bg_fit, 'cover')
+    return f"""
+/* Background image (bg_image_path setting) — one picture per tab. */
+.tab-root {{
+    background-image: url("{uri}");
+    background-size: {size};
+    background-position: center;
+    background-repeat: no-repeat;
+}}
+.pane-box {{
+    background: transparent;
+}}
+vte-terminal {{
+    background-color: transparent;
+    background-image: none;
+}}
+"""
+
+
+def build_css(theme, ssh_color='', bg_image_path='', bg_fit='cover'):
     t = THEMES[theme]
     is_dark = theme in DARK_LIKE
     return f"""
@@ -809,6 +855,7 @@ popover > contents button.flat:hover {{
     font-style: italic;
 }}
 
+{_bg_image_css(bg_image_path, bg_fit)}
 """
 
 
@@ -2449,6 +2496,53 @@ class PreferencesWindow(Adw.PreferencesWindow):
         exit_row.add_suffix(exit_seg)
         terminal_grp.add(exit_row)
 
+        # Background image — file chooser + clear button. fit/opacity rows
+        # are disabled while no image is set, both as a UI hint and because
+        # they have no visible effect until then.
+        self.bg_image_row = Adw.ActionRow(title="Background image")
+        self.bg_image_row.add_prefix(Gtk.Image.new_from_icon_name('image-x-generic-symbolic'))
+        bg_browse_btn = Gtk.Button(label="Browse…")
+        bg_browse_btn.add_css_class('flat')
+        bg_browse_btn.set_valign(Gtk.Align.CENTER)
+        bg_browse_btn.connect('clicked', self._on_bg_image_browse)
+        self.bg_clear_btn = Gtk.Button(icon_name='edit-clear-symbolic')
+        self.bg_clear_btn.add_css_class('flat')
+        self.bg_clear_btn.set_valign(Gtk.Align.CENTER)
+        self.bg_clear_btn.set_tooltip_text("Remove background image")
+        self.bg_clear_btn.connect('clicked', self._on_bg_image_clear)
+        self.bg_image_row.add_suffix(bg_browse_btn)
+        self.bg_image_row.add_suffix(self.bg_clear_btn)
+        terminal_grp.add(self.bg_image_row)
+
+        fit_row = Adw.ActionRow(
+            title="Background fit",
+            subtitle="How the image is scaled to fill each tab",
+        )
+        self.bg_fit_seg = self._segmented(
+            [('Cover', 'cover'), ('Contain', 'contain'), ('Fill', 'fill')],
+            app.settings.get('bg_fit', DEFAULT_SETTINGS['bg_fit']),
+            lambda value: app.set_setting('bg_fit', value),
+        )
+        fit_row.add_suffix(self.bg_fit_seg)
+        terminal_grp.add(fit_row)
+        self.bg_fit_row = fit_row
+
+        self.bg_opacity_row = Adw.SpinRow.new_with_range(0.30, 1.00, 0.05)
+        self.bg_opacity_row.set_digits(2)
+        self.bg_opacity_row.set_title("Background opacity")
+        self.bg_opacity_row.set_subtitle(
+            "How much the image shows through the terminal text. A busy "
+            "image can still hurt readability in its brighter regions "
+            "regardless of this value.")
+        self.bg_opacity_row.set_value(
+            app.settings.get('bg_opacity', DEFAULT_SETTINGS['bg_opacity']))
+        self.bg_opacity_row.connect(
+            'notify::value',
+            lambda r, _p: app.set_setting('bg_opacity', round(r.get_value(), 2)))
+        terminal_grp.add(self.bg_opacity_row)
+
+        self._update_bg_image_row()
+
         # --- Profiles & state -----------------------------------------------
         prof_grp = Adw.PreferencesGroup(title="Profiles &amp; state")
         page.add(prof_grp)
@@ -2520,6 +2614,40 @@ class PreferencesWindow(Adw.PreferencesWindow):
         s = desc.to_string()
         row.set_subtitle(s)
         self.app.set_setting('terminal_font', s)
+
+    def _update_bg_image_row(self):
+        path = self.app.settings.get('bg_image_path', '')
+        self.bg_image_row.set_subtitle(path or "None — plain terminal background")
+        self.bg_clear_btn.set_sensitive(bool(path))
+        self.bg_fit_row.set_sensitive(bool(path))
+        self.bg_opacity_row.set_sensitive(bool(path))
+
+    def _on_bg_image_browse(self, _btn):
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Background image")
+        img_filter = Gtk.FileFilter()
+        img_filter.set_name("Images")
+        img_filter.add_pixbuf_formats()
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(img_filter)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(img_filter)
+        dialog.open(self, None, self._on_bg_image_chosen)
+
+    def _on_bg_image_chosen(self, dialog, result):
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return      # cancelled, or the platform picker failed
+        path = file.get_path() if file else None
+        if not path:
+            return
+        self.app.set_setting('bg_image_path', path)
+        self._update_bg_image_row()
+
+    def _on_bg_image_clear(self, _btn):
+        self.app.set_setting('bg_image_path', '')
+        self._update_bg_image_row()
 
     def _on_reveal_config(self, _btn):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -2850,6 +2978,12 @@ class DevFrame(Adw.Application):
         elif key == 'copy_on_selection':
             # Wired in on_terminal_selection; nothing to flip eagerly.
             pass
+        elif key in ('bg_image_path', 'bg_opacity', 'bg_fit'):
+            # _apply_theme() rebuilds the CSS provider (picks up the new
+            # image/fit) and re-applies terminal colours for every open
+            # terminal (picks up the new opacity and clear_background),
+            # exactly the two effects a background-image change needs.
+            self._apply_theme()
 
     def load_state(self):
         try:
@@ -2948,7 +3082,9 @@ class DevFrame(Adw.Application):
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.css_provider.load_from_data(
-            build_css(theme, self.settings.get('ssh_color', '')).encode('utf-8'))
+            build_css(theme, self.settings.get('ssh_color', ''),
+                     bg_image_path=self.settings.get('bg_image_path', ''),
+                     bg_fit=self.settings.get('bg_fit', 'cover')).encode('utf-8'))
 
         # Theme class on the window mirrors what the HTML mock did with
         # .theme-light/.theme-dark/.theme-nord on its root. Useful as a hook
@@ -2967,8 +3103,17 @@ class DevFrame(Adw.Application):
         if theme not in THEMES:
             theme = self.settings.get('color_scheme', 'dark')
         t = THEMES[theme]
-        terminal.set_colors(_rgba(t['term_fg']), _rgba(t['term_bg']),
-                            _vte_palette(theme))
+
+        # Background image feature: only touch clear_background/alpha when an
+        # image is actually configured, so a terminal with no image set is
+        # byte-for-byte the same call as before this feature existed.
+        bg_image_path = self.settings.get('bg_image_path', '')
+        terminal.set_clear_background(bool(bg_image_path))
+        bg = _rgba(t['term_bg'])
+        if bg_image_path:
+            bg.alpha = float(self.settings.get('bg_opacity', DEFAULT_SETTINGS['bg_opacity']))
+
+        terminal.set_colors(_rgba(t['term_fg']), bg, _vte_palette(theme))
 
     # ----- lifecycle -------------------------------------------------------
 
@@ -3196,6 +3341,7 @@ class DevFrame(Adw.Application):
                     dot_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
 
         tab_root = Gtk.Box()
+        tab_root.add_css_class('tab-root')   # background-image feature seam
         tab_root.set_hexpand(True)
         tab_root.set_vexpand(True)
 
@@ -4271,6 +4417,7 @@ class DevFrame(Adw.Application):
                 dot.get_style_context().add_provider(
                     dot_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
             tab_root = Gtk.Box()
+            tab_root.add_css_class('tab-root')   # background-image feature seam
             tab_root.set_hexpand(True)
             tab_root.set_vexpand(True)
             content = self._build_profile_layout(
@@ -4372,6 +4519,7 @@ class DevFrame(Adw.Application):
                      self.settings.get('terminal_font', DEFAULT_SETTINGS['terminal_font']))
 
         tab_root = Gtk.Box()
+        tab_root.add_css_class('tab-root')   # background-image feature seam
         tab_root.set_hexpand(True)
         tab_root.set_vexpand(True)
 
