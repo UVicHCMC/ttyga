@@ -81,6 +81,7 @@ tab_root (Gtk.Box, hexpand+vexpand)
 | `_new_terminal()` | Constructs and spawns a `Vte.Terminal` via `spawn_async`. |
 | `_split_pane()` | Splits the focused pane. SSH panes re-connect via `--init-file`; local panes inherit cwd from OSC 7 or `spawn_dir`. Replaces parent `Gtk.Box` or `Gtk.Paned` child with a new `Gtk.Paned`. |
 | `_close_pane()` | Removes one pane, promotes its sibling up the tree. |
+| `_on_child_exited()` | Fires when a pane's shell exits. Does nothing but `GLib.idle_add(_reap_exited_pane)` — reaping from inside VTE's own emission would unparent a `Gtk.Paned` child mid-teardown. `_reap_exited_pane()` re-checks `self.tabs` (a user close often wins the race) and honours the `close_on_exit` setting (`always` / `clean` / `never`). |
 | `_serialise_tab()` / `_serialise_pane()` | Recursively serialises the pane tree to a JSON-friendly dict for `app_state.json`. |
 | `_restore_tab()` / `_build_pane_tree()` | Reconstructs a tab from a serialised layout. |
 | `_build_sidebar()` | Rebuilds the entire sidebar from the current profile list. |

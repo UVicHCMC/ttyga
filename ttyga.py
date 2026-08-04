@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.47"
+APP_VERSION = "0.6.48"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -72,6 +72,10 @@ DEFAULT_SETTINGS = {
     'scrollback':        10000,
     'scroll_speed':      3,             # lines per wheel tick (1–10)
     'copy_on_selection': True,
+    'close_on_exit':     'clean',     # always | clean | never — close a pane
+                                      # when its shell exits; 'clean' keeps the
+                                      # pane up on a non-zero/signal exit so the
+                                      # error stays readable
     'restore_tabs':      True,
     'welcome_image':     '',          # path to PNG/SVG; empty = monochrome icon
     'ssh_color':         '',          # SSH tab/dot colour; empty = theme default
@@ -1868,6 +1872,19 @@ class PreferencesWindow(Adw.PreferencesWindow):
                          lambda r, _p: app.set_setting('copy_on_selection', r.get_active()))
         terminal_grp.add(copy_row)
 
+        exit_row = Adw.ActionRow(
+            title="Close pane on exit",
+            subtitle="When a pane's shell exits. Clean keeps failures on screen",
+        )
+        exit_row.add_prefix(Gtk.Image.new_from_icon_name('window-close-symbolic'))
+        exit_seg = self._segmented(
+            [('Always', 'always'), ('Clean', 'clean'), ('Never', 'never')],
+            app.settings.get('close_on_exit', DEFAULT_SETTINGS['close_on_exit']),
+            lambda value: app.set_setting('close_on_exit', value),
+        )
+        exit_row.add_suffix(exit_seg)
+        terminal_grp.add(exit_row)
+
         # --- Profiles & state -----------------------------------------------
         prof_grp = Adw.PreferencesGroup(title="Profiles &amp; state")
         page.add(prof_grp)
@@ -3317,6 +3334,7 @@ class DevFrame(Adw.Application):
         terminal.connect('window-title-changed', self._on_terminal_title_changed)
         terminal.connect('notify::has-focus', self._on_terminal_focus)
         terminal.connect('bell', self._on_terminal_bell)
+        terminal.connect('child-exited', self._on_child_exited)
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self.on_key_pressed)
@@ -4158,6 +4176,62 @@ class DevFrame(Adw.Application):
             self._on_close_tab(None, terminal)
         else:
             self._close_pane(terminal)
+
+    # ----- shell exit --------------------------------------------------------
+
+    def _on_child_exited(self, terminal, status):
+        """VTE's child shell has exited.
+
+        Do nothing here but schedule an idle. Reaping the pane means
+        unparenting a Gtk.Paned child, and this handler runs inside VTE's own
+        signal emission while it is tearing down the pty for that very widget
+        — exactly the area of the documented segfault (see the
+        set_start_child(None) note in CLAUDE.md). The idle lands after VTE has
+        finished, and re-checks that the pane is still open, because a
+        user-initiated close can easily win the race (closing a tab kills the
+        children, so this signal fires *after* the tab is already gone)."""
+        GLib.idle_add(self._reap_exited_pane, terminal, status,
+                      priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+    def _reap_exited_pane(self, terminal, status):
+        meta = self.tabs.get(terminal)
+        if meta is None:
+            return False      # already closed — by the user, or by an earlier reap
+        meta['exited'] = True
+        meta.pop('child_pid', None)   # nothing left to check for foreground work
+
+        clean = os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+        mode  = self.settings.get('close_on_exit', DEFAULT_SETTINGS['close_on_exit'])
+        if mode == 'never' or (mode == 'clean' and not clean):
+            self._mark_pane_exited(terminal, status)
+            return False
+
+        # No confirmation prompt: the child is already gone, so there is
+        # nothing left running to warn about. Go straight to the _do_ helpers.
+        tab_root = meta.get('tab_root')
+        if tab_root is None:
+            return False
+        in_tab = [t for t, m in self.tabs.items() if m.get('tab_root') is tab_root]
+        if len(in_tab) <= 1:
+            self._do_close_tab(tab_root)
+        else:
+            self._do_close_pane(terminal)
+        return False
+
+    def _mark_pane_exited(self, terminal, status):
+        """Leave a dead pane on screen (close_on_exit = never, or a dirty exit)
+        but say so, otherwise it reads as a hung terminal."""
+        if os.WIFSIGNALED(status):
+            what = f'killed by signal {os.WTERMSIG(status)}'
+        elif os.WIFEXITED(status):
+            what = f'exit status {os.WEXITSTATUS(status)}'
+        else:
+            what = 'terminated'
+        try:
+            terminal.feed(f'\r\n\033[2m[ttyga] shell {what} — '
+                          f'Ctrl+Shift+W closes this pane\033[0m\r\n'.encode())
+        except Exception:
+            pass
 
     # ----- tab context menu (right-click) + merge ----------------------------
 
