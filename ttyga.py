@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.49"
+APP_VERSION = "0.6.50"
 APP_AUTHOR  = "greg"
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
@@ -105,17 +105,6 @@ CLOCK_DATE_MIN_PX = 10    # sidebar clock: smallest date font size, pixels
 CLOCK_DATE_MAX_PX = 22    # sidebar clock: largest date font size, pixels
 
 PROFILE_ICON_PX  = 24     # sidebar profile button icon size
-
-def _blend(hex_a, hex_b, t):
-    """Composite hex_b over hex_a at opacity t, returning an opaque #rrggbb.
-
-    Used where a CSS animation has to end up at a *specific* colour rather
-    than a translucent overlay — keyframes replace the property outright, so
-    "accent with a wash of term_warn over it" has to be precomputed.
-    """
-    a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
-    return '#%02x%02x%02x' % tuple(round(x * (1 - t) + y * t) for x, y in zip(a, b))
 
 def _is_gtk_icon(s):
     """True if s looks like a GTK icon name (pure ASCII, lowercase/digits/hyphens)."""
@@ -546,34 +535,41 @@ headerbar splitbutton image {{
    same term_warn as the tab flash and on the same 1.2s beat, so "wants
    attention" never reads as the accent-coloured "currently on screen".
 
-   Animating background-color deliberately, matching .tab-activity below —
-   an inset box-shadow would layer over the row's existing background instead
-   of replacing it, but nothing here confirms GTK4 animates box-shadow, and
-   background-color is the one this app already demonstrably animates.
+   The row stays tinted for as long as attention is pending, breathing
+   between a wash of term_warn and the solid colour, rather than fading out
+   to nothing on every cycle — so a glance at any point in the cycle still
+   shows which profile is asking.
 
-   The cost of replacing rather than layering: a row that is also .active
-   would be animated down to transparent, losing its accent fill. That
-   happens whenever a second tab hosts the same profile and is on screen
-   while this one rings. Hence the .active.attention variant, which pulses
-   between accent and accent-with-term_warn-washed-over-it (precomputed,
-   because keyframes need a literal colour, not an overlay). */
-/* Each stop gets its own block: GTK4's CSS parser rejects a comma-separated
+   background-color, not an inset box-shadow. A shadow composites over the
+   row's existing background (which would let an .active row keep its accent
+   underneath), but filling a row via an inset shadow means a spread large
+   enough to collapse the inner box, and the degenerate geometry renders as
+   a denser core inside a lighter surround with a hard step between the two
+   — the core's size tracking the spread. background-color fills the padding
+   box uniformly by definition, which is what this needs, and it is what
+   .tab-activity below already uses.
+
+   Text and icon deliberately do NOT travel with it — they stay the theme's
+   fg. Animating them to accent_fg at the peak buys contrast (fg on solid
+   term_warn is only 1.35:1 in nord, 1.98 dark, 2.58 light) but reads as the
+   row inverting, which looks worse than the brief wash-out it prevents.
+   Greg's call, 2026-08-04, having looked at both. If the peak ever needs to
+   stay legible, lower the 50% stop's alpha below solid rather than
+   reintroducing the colour flip.
+
+   A pulsing row overrides .active rather than layering over it: a profile
+   open in both the visible tab and a ringing background tab reads as
+   "wants attention", which is the more urgent of the two states.
+
+   Each stop gets its own block: GTK4's CSS parser rejects a comma-separated
    keyframe selector — writing 0% and 100% as one stop fails to parse. */
 @keyframes sidebar-attention {{
-    0%   {{ background-color: transparent; }}
-    50%  {{ background-color: rgba({int(t['term_warn'][1:3],16)},{int(t['term_warn'][3:5],16)},{int(t['term_warn'][5:7],16)},0.28); }}
-    100% {{ background-color: transparent; }}
-}}
-@keyframes sidebar-attention-active {{
-    0%   {{ background-color: {t['accent']}; }}
-    50%  {{ background-color: {_blend(t['accent'], t['term_warn'], 0.45)}; }}
-    100% {{ background-color: {t['accent']}; }}
+    0%   {{ background-color: rgba({int(t['term_warn'][1:3],16)},{int(t['term_warn'][3:5],16)},{int(t['term_warn'][5:7],16)},0.28); }}
+    50%  {{ background-color: {t['term_warn']}; }}
+    100% {{ background-color: rgba({int(t['term_warn'][1:3],16)},{int(t['term_warn'][3:5],16)},{int(t['term_warn'][5:7],16)},0.28); }}
 }}
 .profile-row.attention {{
     animation: sidebar-attention 1.2s ease-in-out infinite;
-}}
-.profile-row.active.attention {{
-    animation: sidebar-attention-active 1.2s ease-in-out infinite;
 }}
 
 /* Tabs -------------------------------------------------------------------- */
