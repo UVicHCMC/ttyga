@@ -21,9 +21,24 @@ python3 ttyga.py
 ./package.sh
 ```
 
-There are no tests, no linter, and no build step. The entire app is `ttyga.py`.
+There is no linter and no build step. The entire app is `ttyga.py`.
 
 Bump `APP_VERSION` in `ttyga.py` whenever meaningful changes land — don't ask, just do it.
+
+## Tests
+
+No test runner and no CI — two standalone scripts, run directly:
+
+```bash
+python3 tests/test_bg_image_css.py     # headless, <1s
+python3 tests/test_pane_margins.py     # opens a window, ~5s
+```
+
+They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in two fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
+
+`test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one.
+
+Appearance cannot be verified from a script here: screenshots come back stale (Mutter has no wlr-screencopy; `gnome-screenshot` returned ten byte-identical frames over six seconds, clock seconds included). Assert on widget state and CSS classes, then ask Greg to look.
 
 ## Architecture
 
