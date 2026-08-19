@@ -28,6 +28,7 @@ import yaml
 import json
 import re
 import logging
+import time
 from datetime import datetime
 
 gi.require_version('Gtk', '4.0')
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.54"
+APP_VERSION = "0.6.55"
 APP_AUTHOR  = "greg"
 
 # Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
@@ -122,6 +123,9 @@ CLOCK_TIME_MAX_PX = 80    # sidebar clock: largest time font size, pixels
 CLOCK_DATE_AREA_H = 26    # sidebar clock: date drawing area height, pixels
 CLOCK_DATE_MIN_PX = 10    # sidebar clock: smallest date font size, pixels
 CLOCK_DATE_MAX_PX = 22    # sidebar clock: largest date font size, pixels
+
+CLOCK_CONTROL_ICON_PX       = 28   # clock-mode single start-stopwatch button
+CLOCK_CONTROL_ICON_PX_SMALL = 18   # stopwatch-mode 3-button stack
 
 PROFILE_ICON_PX  = 24     # sidebar profile button icon size
 
@@ -2947,6 +2951,13 @@ class DevFrame(Adw.Application):
         self._window_active     = True   # tracks whether the ttyga window has OS focus
         self._notified_roots    = set()  # tab_roots already notified this episode
 
+        # Sidebar stopwatch (session-scoped, not persisted to app_state.json)
+        self._clock_mode           = 'clock'   # 'clock' | 'stopwatch'
+        self._stopwatch_running    = False
+        self._stopwatch_elapsed    = 0.0   # accumulated seconds from completed segments
+        self._stopwatch_start_mono = None  # time.monotonic() when the current segment began
+        self._stopwatch_started_at = None  # wall-clock datetime of the most recent fresh start
+
     # ----- config / settings / state I/O -----------------------------------
 
     def load_config(self):
@@ -3509,30 +3520,38 @@ class DevFrame(Adw.Application):
         # Clock — pinned to the bottom of the sidebar simply by being the
         # last child after the vexpand'd scroll area; no overlay needed.
         # Both lines are drawn (not Labels) so their font scales to fill the
-        # sidebar's width, however wide the user drags it.
+        # sidebar's width, however wide the user drags it. A control block
+        # to the right doubles as a stopwatch: one button starts it, three
+        # (pause/resume, reset, switch back) appear while it's showing.
         sidebar_inner.append(Gtk.Separator())
 
-        clock_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        clock_box.set_margin_top(4)
-        clock_box.set_margin_bottom(8)
-        clock_box.set_margin_start(4)
-        clock_box.set_margin_end(4)
+        clock_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        clock_row.set_margin_top(4)
+        clock_row.set_margin_bottom(8)
+        clock_row.set_margin_start(4)
+        clock_row.set_margin_end(4)
+
+        clock_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        clock_col.set_hexpand(True)
 
         self._clock_time_text = datetime.now().strftime('%H:%M:%S')
         self.clock_time_area = Gtk.DrawingArea()
         self.clock_time_area.set_hexpand(True)
         self.clock_time_area.set_content_height(CLOCK_TIME_AREA_H)
         self.clock_time_area.set_draw_func(self._draw_clock_time)
-        clock_box.append(self.clock_time_area)
+        clock_col.append(self.clock_time_area)
 
         self._clock_date_text = datetime.now().strftime('%a %b %d %Y')
         self.clock_date_area = Gtk.DrawingArea()
         self.clock_date_area.set_hexpand(True)
         self.clock_date_area.set_content_height(CLOCK_DATE_AREA_H)
         self.clock_date_area.set_draw_func(self._draw_clock_date)
-        clock_box.append(self.clock_date_area)
+        clock_col.append(self.clock_date_area)
 
-        sidebar_inner.append(clock_box)
+        clock_row.append(clock_col)
+        clock_row.append(self._build_stopwatch_controls())
+
+        sidebar_inner.append(clock_row)
         self._update_clock()
         GLib.timeout_add_seconds(1, self._update_clock)
 
@@ -5259,10 +5278,134 @@ class DevFrame(Adw.Application):
     def _update_clock(self):
         now = datetime.now()
         self._clock_time_text = now.strftime('%H:%M:%S')
-        self._clock_date_text = now.strftime('%a %b %d %Y')
+        if self._clock_mode == 'stopwatch':
+            started = self._stopwatch_started_at
+            self._clock_date_text = f"started {started.strftime('%H:%M')}" if started else ''
+        else:
+            self._clock_date_text = now.strftime('%a %b %d %Y')
         self.clock_time_area.queue_draw()
         self.clock_date_area.queue_draw()
         return True
+
+    def _stopwatch_seconds(self):
+        if self._stopwatch_running:
+            return self._stopwatch_elapsed + (time.monotonic() - self._stopwatch_start_mono)
+        return self._stopwatch_elapsed
+
+    def _format_stopwatch(self, seconds):
+        total = int(seconds)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        return f'{h:02d}:{m:02d}:{s:02d}'
+
+    def _build_stopwatch_controls(self):
+        """The block to the right of the clock: one start button in clock
+        mode, three stacked buttons (pause/resume, reset, switch-to-clock)
+        in stopwatch mode. A Gtk.Stack holds both — homogeneous by default,
+        so it sizes to its largest child and the clock's available width
+        stays constant across mode switches (asymmetric sizing here would
+        make the digits resize every time the mode toggles)."""
+        self._sw_control_stack = Gtk.Stack()
+        self._sw_control_stack.set_transition_type(Gtk.StackTransitionType.NONE)
+
+        clock_controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                  valign=Gtk.Align.CENTER)
+        self._sw_open_btn = Gtk.Button()
+        self._sw_open_btn.add_css_class('flat')
+        self._sw_open_btn.set_tooltip_text('Start stopwatch')
+        open_img = Gtk.Image.new_from_icon_name('ttyga-stopwatch-symbolic')
+        open_img.set_pixel_size(CLOCK_CONTROL_ICON_PX)
+        self._sw_open_btn.set_child(open_img)
+        self._sw_open_btn.connect('clicked', self._on_stopwatch_open_clicked)
+        clock_controls.append(self._sw_open_btn)
+        self._sw_control_stack.add_named(clock_controls, 'clock')
+
+        stopwatch_controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                      spacing=2, valign=Gtk.Align.CENTER)
+
+        self._sw_toggle_btn = Gtk.Button()
+        self._sw_toggle_btn.add_css_class('flat')
+        toggle_img = Gtk.Image.new_from_icon_name('media-playback-pause-symbolic')
+        toggle_img.set_pixel_size(CLOCK_CONTROL_ICON_PX_SMALL)
+        self._sw_toggle_btn.set_child(toggle_img)
+        self._sw_toggle_btn.connect('clicked', self._on_stopwatch_toggle_clicked)
+        stopwatch_controls.append(self._sw_toggle_btn)
+
+        reset_btn = Gtk.Button()
+        reset_btn.add_css_class('flat')
+        reset_btn.set_tooltip_text('Reset')
+        reset_img = Gtk.Image.new_from_icon_name('view-refresh-symbolic')
+        reset_img.set_pixel_size(CLOCK_CONTROL_ICON_PX_SMALL)
+        reset_btn.set_child(reset_img)
+        reset_btn.connect('clicked', self._on_stopwatch_reset_clicked)
+        stopwatch_controls.append(reset_btn)
+
+        show_clock_btn = Gtk.Button()
+        show_clock_btn.add_css_class('flat')
+        show_clock_btn.set_tooltip_text('Switch to clock')
+        clock_img = Gtk.Image.new_from_icon_name('ttyga-clock-symbolic')
+        clock_img.set_pixel_size(CLOCK_CONTROL_ICON_PX_SMALL)
+        show_clock_btn.set_child(clock_img)
+        show_clock_btn.connect('clicked', self._on_stopwatch_show_clock_clicked)
+        stopwatch_controls.append(show_clock_btn)
+
+        self._sw_control_stack.add_named(stopwatch_controls, 'stopwatch')
+        self._sw_control_stack.set_visible_child_name('clock')
+        return self._sw_control_stack
+
+    def _sync_stopwatch_icons(self):
+        toggle_img = self._sw_toggle_btn.get_child()
+        if self._stopwatch_running:
+            toggle_img.set_from_icon_name('media-playback-pause-symbolic')
+            self._sw_toggle_btn.set_tooltip_text('Pause')
+        else:
+            toggle_img.set_from_icon_name('media-playback-start-symbolic')
+            self._sw_toggle_btn.set_tooltip_text('Resume')
+        # Mark the clock-mode trigger while the stopwatch keeps running in
+        # the background — otherwise it looks identical whether the
+        # stopwatch is at zero or forty minutes deep.
+        if self._stopwatch_running:
+            self._sw_open_btn.add_css_class('suggested-action')
+        else:
+            self._sw_open_btn.remove_css_class('suggested-action')
+
+    def _on_stopwatch_open_clicked(self, btn):
+        self._clock_mode = 'stopwatch'
+        self._sw_control_stack.set_visible_child_name('stopwatch')
+        # Only a genuinely fresh stopwatch (never started, or reset) starts
+        # counting here — reopening one that's paused mid-count must just
+        # show it, not silently resume it.
+        if self._stopwatch_elapsed == 0.0 and not self._stopwatch_running:
+            self._stopwatch_running = True
+            self._stopwatch_start_mono = time.monotonic()
+            self._stopwatch_started_at = datetime.now()
+        self._sync_stopwatch_icons()
+        self._update_clock()
+
+    def _on_stopwatch_toggle_clicked(self, btn):
+        if self._stopwatch_running:
+            self._stopwatch_elapsed += time.monotonic() - self._stopwatch_start_mono
+            self._stopwatch_running = False
+        else:
+            self._stopwatch_start_mono = time.monotonic()
+            self._stopwatch_running = True
+        self._sync_stopwatch_icons()
+        self._update_clock()
+
+    def _on_stopwatch_reset_clicked(self, btn):
+        self._stopwatch_running = False
+        self._stopwatch_elapsed = 0.0
+        self._stopwatch_start_mono = None
+        self._stopwatch_started_at = None
+        self._sync_stopwatch_icons()
+        self._update_clock()
+
+    def _on_stopwatch_show_clock_clicked(self, btn):
+        # Deliberately does not touch _stopwatch_running — this is what
+        # lets the stopwatch keep counting in the background.
+        self._clock_mode = 'clock'
+        self._sw_control_stack.set_visible_child_name('clock')
+        self._update_clock()
 
     def _draw_fitted_text(self, cr, width, height, text, color, min_px, max_px, bold=False):
         """Render text as large as (width, height) allows.
@@ -5290,7 +5433,7 @@ class DevFrame(Adw.Application):
         if ref_w <= 0:
             return
 
-        pad = 8
+        pad = 4
         font_px = ref_px * (width - 2 * pad) / ref_w
         font_px = min(font_px, ref_px * height / ref_h)
         font_px = max(min_px, min(max_px, font_px))
@@ -5306,7 +5449,11 @@ class DevFrame(Adw.Application):
     def _draw_clock_time(self, area, cr, width, height):
         theme = self.settings.get('color_scheme', 'dark')
         fg = _rgba(THEMES.get(theme, THEMES['dark'])['fg'])
-        self._draw_fitted_text(cr, width, height, self._clock_time_text, fg,
+        if self._clock_mode == 'stopwatch':
+            text = self._format_stopwatch(self._stopwatch_seconds())
+        else:
+            text = self._clock_time_text
+        self._draw_fitted_text(cr, width, height, text, fg,
                                 CLOCK_TIME_MIN_PX, CLOCK_TIME_MAX_PX, bold=True)
 
     def _draw_clock_date(self, area, cr, width, height):
@@ -5678,6 +5825,11 @@ if __name__ == "__main__":
                             format='%(levelname)s %(name)s: %(message)s')
         print(f"[dev] config dir: {_dev_tmpdir}", file=sys.stderr, flush=True)
         app = DevFrame()
+        # NON_UNIQUE, not just a fresh config dir: application_id is shared
+        # with a real running ttyga, so without this a --dev run silently
+        # forwards 'activate' to that instance over D-Bus (presenting its
+        # window) and exits immediately instead of opening its own.
+        app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
         app.run(None)
         _dev_tmp.cleanup()
     else:

@@ -15,6 +15,7 @@ ttyga (/ˈtaɪ.ɡə/, like the biome) is a GTK4 terminal for GNOME with a profil
 - **Profile inheritance** — profiles can inherit from a base profile to avoid repetition
 - **Colour and icon per profile** — colour-coded dots and icons in both the sidebar and tab labels
 - **Background notifications** — desktop notification and launcher badge when a background tab has activity while the window is unfocused; per-profile notification text
+- **Sidebar clock / stopwatch** — the clock at the bottom of the sidebar doubles as a stopwatch; it keeps counting in the background if you switch back to the clock
 
 ## Requirements
 

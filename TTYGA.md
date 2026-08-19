@@ -22,6 +22,20 @@ Profile buttons show the profile icon on the left, the name in the middle, and a
 
 ---
 
+## Sidebar clock and stopwatch
+
+Below the profile list, the sidebar shows the current time and date, with a small icon beside it. Click that icon to switch to a stopwatch — it starts counting immediately, in hours:minutes:seconds.
+
+While the stopwatch is showing, three buttons take the icon's place:
+
+- **Pause / resume** — stop or continue the count
+- **Reset** — zero the stopwatch and pause it
+- **Clock** — switch back to showing the time
+
+Switching back to the clock does **not** stop the stopwatch — it keeps counting in the background, and the icon lights up to show it's still running. Click the icon again to bring the stopwatch back up without losing time; if it was paused, it comes back paused at the same value rather than restarting.
+
+---
+
 ## Profiles
 
 A profile is a saved action — either an SSH connection or a shell command. Clicking a profile in the sidebar opens a new terminal tab and either connects to the remote host or types the command into the new shell.
