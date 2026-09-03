@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.55"
+APP_VERSION = "0.6.59"
 APP_AUTHOR  = "greg"
 
 # Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
@@ -87,6 +87,11 @@ DEFAULT_SETTINGS = {
                                       # pane up on a non-zero/signal exit so the
                                       # error stays readable
     'restore_tabs':      True,
+    'sidebar_click':     'switch',   # switch | launch — clicking a row whose
+                                     # profile is already open raises that tab
+                                     # (cycling, when it is open in several)
+                                     # rather than launching another. Ctrl+click
+                                     # always launches, whichever mode is set.
     'bg_image_path':      '',         # path to an image behind terminal panes;
                                       # empty = no background image (default look)
     'bg_opacity':         0.75,       # terminal bg alpha over the image, 0.0-1.0
@@ -2590,6 +2595,19 @@ class PreferencesWindow(Adw.PreferencesWindow):
                             lambda r, _p: app.set_setting('restore_tabs', r.get_active()))
         prof_grp.add(restore_row)
 
+        click_row = Adw.ActionRow(
+            title="Sidebar click",
+            subtitle="Switch raises an already-open tab; Ctrl+click always opens a new one",
+        )
+        click_row.add_prefix(Gtk.Image.new_from_icon_name('go-jump-symbolic'))
+        click_seg = self._segmented(
+            [('Switch', 'switch'), ('Launch', 'launch')],
+            app.settings.get('sidebar_click', DEFAULT_SETTINGS['sidebar_click']),
+            lambda value: app.set_setting('sidebar_click', value),
+        )
+        click_row.add_suffix(click_seg)
+        prof_grp.add(click_row)
+
         config_row = Adw.ActionRow(
             title="Profile config",
             subtitle=str(CONFIG_FILE),
@@ -2943,6 +2961,7 @@ class DevFrame(Adw.Application):
         self.settings    = self._load_settings()
         self._sidebar_toggle_btn = None
         self.active_profile_keys = set()   # {(name, group)} of highlighted profiles
+        self._force_new_tab      = False   # Ctrl held on the current sidebar click
         self._profile_buttons   = []     # [(btn, profile)] for search filtering
         self._flat_groups       = []     # [(header, vbox, g_name)] for flat layout
         self._font_zoom_delta   = 0      # ephemeral pt offset from saved font size
@@ -3016,6 +3035,8 @@ class DevFrame(Adw.Application):
         elif key == 'scrollback':
             for term in self.tabs:
                 term.set_scrollback_lines(int(value))
+        elif key == 'sidebar_click':
+            self._refresh_sidebar_tooltips()
         elif key == 'copy_on_selection':
             # Wired in on_terminal_selection; nothing to flip eagerly.
             pass
@@ -4055,22 +4076,105 @@ class DevFrame(Adw.Application):
             base.set_size(int(max(6, min(72, raw + self._font_zoom_delta)) * Pango.SCALE))
             term.set_font(base)
 
+    def _has_scrollback(self, terminal):
+        """True when the terminal actually has off-screen rows to scroll to.
+
+        A full-screen program on the alternate screen (claude, htop, less, vim)
+        has none — its VTE adjustment spans exactly the visible rows. In that
+        case ttyga must NOT consume wheel/key events: they have to fall through
+        to VTE so it can forward them to the program, which does its own paging.
+        Only when this is True does ttyga scroll VTE's buffer itself."""
+        adj = terminal.get_vadjustment()
+        if not adj:
+            return False
+        return (adj.get_upper() - adj.get_page_size()) >= 1
+
+    def _scroll_terminal_adj(self, terminal, delta):
+        """Nudge a terminal's scrollback by `delta` lines, clamped to the buffer.
+        Caller must have checked _has_scrollback() first."""
+        adj = terminal.get_vadjustment()
+        if not adj:
+            return
+        lo = adj.get_lower()
+        bottom = max(lo, adj.get_upper() - adj.get_page_size())
+        adj.set_value(max(lo, min(bottom, adj.get_value() + delta)))
+
+    def _wheel_lines(self, controller, delta):
+        """Fold a wheel delta into whole lines via a per-controller accumulator."""
+        speed = float(self.settings.get('scroll_speed', DEFAULT_SETTINGS['scroll_speed']))
+        if not hasattr(controller, '_scroll_accum'):
+            controller._scroll_accum = 0.0
+        controller._scroll_accum += delta * speed
+        lines = int(controller._scroll_accum)
+        controller._scroll_accum -= lines
+        return lines
+
     def _on_terminal_scroll(self, controller, _dx, dy):
+        """Bubble-phase wheel handler. Scrolls VTE's buffer only when the pane
+        has scrollback; otherwise returns False so the wheel reaches VTE and is
+        forwarded to the foreground program (which pages its own alt screen)."""
         state = controller.get_current_event_state()
         if state & Gdk.ModifierType.CONTROL_MASK:
             self._zoom_font(-1 if dy < 0 else 1)
             return True
-        speed = float(self.settings.get('scroll_speed', DEFAULT_SETTINGS['scroll_speed']))
-        if not hasattr(controller, '_scroll_accum'):
-            controller._scroll_accum = 0.0
-        controller._scroll_accum += dy * speed
-        lines = int(controller._scroll_accum)
+        if not self._has_scrollback(controller.get_widget()):
+            return False   # let VTE forward the wheel to the foreground program
+        lines = self._wheel_lines(controller, dy)
         if lines:
-            controller._scroll_accum -= lines
-            adj = controller.get_widget().get_vadjustment()
-            if adj:
-                lo, hi, page = adj.get_lower(), adj.get_upper(), adj.get_page_size()
-                adj.set_value(max(lo, min(hi - page, adj.get_value() + lines)))
+            self._scroll_terminal_adj(controller.get_widget(), lines)
+        return True
+
+    def _on_terminal_scroll_capture(self, controller, dx, dy):
+        """Capture-phase wheel handler — sees the event before VTE can hand it
+        to a mouse-reporting program. Only claims Ctrl (zoom) and Shift
+        (scrollback bypass); a plain wheel falls through untouched."""
+        state = controller.get_current_event_state()
+        delta = dy if dy else dx
+        if state & Gdk.ModifierType.CONTROL_MASK:
+            if delta:
+                self._zoom_font(-1 if delta < 0 else 1)
+            return True
+        if state & Gdk.ModifierType.SHIFT_MASK:
+            if not self._has_scrollback(controller.get_widget()):
+                return False   # nothing to scroll — let VTE forward it
+            lines = self._wheel_lines(controller, delta)
+            if lines:
+                self._scroll_terminal_adj(controller.get_widget(), lines)
+            return True
+        return False
+
+    def _on_terminal_scroll_key(self, controller, keyval, _keycode, state):
+        """Capture-phase Shift+Page/Home/End → scroll VTE's own buffer, beating
+        both VTE's key routing. Only fires when the pane actually has scrollback
+        (a plain tab); in a full-screen program it falls through so the program
+        can page itself."""
+        if not (state & Gdk.ModifierType.SHIFT_MASK):
+            return False
+        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK):
+            return False
+        if keyval not in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up,
+                          Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down,
+                          Gdk.KEY_Home, Gdk.KEY_KP_Home,
+                          Gdk.KEY_End, Gdk.KEY_KP_End):
+            return False
+        term = controller.get_widget()
+        if not self._has_scrollback(term):
+            return False   # let VTE forward Shift+Page/Home/End to the program
+        adj = term.get_vadjustment()
+        if not adj:
+            return False
+        page = max(1.0, adj.get_page_size() - 1.0)
+        if keyval in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up):
+            self._scroll_terminal_adj(term, -page)
+        elif keyval in (Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down):
+            self._scroll_terminal_adj(term, page)
+        elif keyval in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
+            adj.set_value(adj.get_lower())
+        elif keyval in (Gdk.KEY_End, Gdk.KEY_KP_End):
+            adj.set_value(max(adj.get_lower(),
+                              adj.get_upper() - adj.get_page_size()))
+        else:
+            return False
         return True
 
     def _new_terminal(self, on_spawn=None, shell_args=None, cwd=None, env=None, profile=None):
@@ -4107,6 +4211,22 @@ class DevFrame(Adw.Application):
         key_ctrl.connect("key-pressed", self.on_key_pressed)
         terminal.add_controller(key_ctrl)
 
+        # Capture phase: Shift+Page/Home/End reach VTE's scrollback even when a
+        # full-screen program (claude, htop, less) has grabbed the keyboard.
+        scroll_key_ctrl = Gtk.EventControllerKey()
+        scroll_key_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scroll_key_ctrl.connect('key-pressed', self._on_terminal_scroll_key)
+        terminal.add_controller(scroll_key_ctrl)
+
+        # Capture phase: Ctrl+wheel (zoom) and Shift+wheel (scrollback) are
+        # claimed before VTE can forward the wheel to a mouse-reporting program.
+        scroll_capture_ctrl = Gtk.EventControllerScroll(
+            flags=Gtk.EventControllerScrollFlags.BOTH_AXES)
+        scroll_capture_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scroll_capture_ctrl.connect('scroll', self._on_terminal_scroll_capture)
+        terminal.add_controller(scroll_capture_ctrl)
+
+        # Bubble phase: a plain wheel at a plain prompt scrolls the buffer.
         scroll_ctrl = Gtk.EventControllerScroll(
             flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll_ctrl.connect('scroll', self._on_terminal_scroll)
@@ -4180,10 +4300,12 @@ class DevFrame(Adw.Application):
         self.active_profile_keys = keys
 
         for btn, p in self._profile_buttons:
-            key = (p.get('name'), p.get('group', 'General'))
+            key = self._profile_key(p)
             if key in keys:
                 btn.add_css_class('active')
                 self.active_btns.add(btn)
+
+        self._refresh_sidebar_tooltips()
 
     def _refresh_sidebar_highlight(self):
         """Recompute highlighting for whichever tab is currently on screen."""
@@ -4191,6 +4313,59 @@ class DevFrame(Adw.Application):
         if page < 0:
             return
         self._update_sidebar_highlight(self.notebook.get_nth_page(page))
+
+    @staticmethod
+    def _always_launches(p):
+        """True for a profile that can never be "already open", so a click on
+        it always launches.
+
+        Only in-place clippets qualify: they feed a command into the terminal
+        already on screen and own no tab of their own. A plain clippet DOES
+        open a tab — most local profiles are clippets (`cd` into a project,
+        run `claude`) — so exempting the type wholesale would strand exactly
+        the profiles this feature exists for."""
+        return (p.get('type') == 'clippet'
+                and (p.get('options') or {}).get('in_place', False))
+
+    @staticmethod
+    def _profile_key(p):
+        """(name, group) — the identity that matches a sidebar row to an open
+        pane. None for no profile, so a plain tab never matches anything."""
+        if not p:
+            return None
+        return (p.get('name'), p.get('group', 'General'))
+
+    def _refresh_sidebar_tooltips(self):
+        """Tooltip a sidebar row only while its profile is open somewhere.
+
+        Ctrl+click is the escape hatch for forcing a second tab and there is
+        nowhere else it could be discovered, so the reminder rides on the rows
+        where it actually applies rather than nagging on all of them. Counted
+        per tab, not per pane: two panes of one profile in a merged tab are
+        still one place to switch to."""
+        if getattr(self, 'notebook', None) is None:
+            return   # first _build_sidebar() runs before the notebook exists
+
+        switching = self.settings.get('sidebar_click',
+                                      DEFAULT_SETTINGS['sidebar_click']) == 'switch'
+        counts = {}
+        if switching:
+            for i in range(self.notebook.get_n_pages()):
+                seen = set()
+                for term in self._all_terminals_in(self.notebook.get_nth_page(i)):
+                    key = self._profile_key(self.tabs.get(term, {}).get('profile'))
+                    if key and key not in seen:
+                        seen.add(key)
+                        counts[key] = counts.get(key, 0) + 1
+
+        for btn, p in self._profile_buttons:
+            n = 0 if self._always_launches(p) else counts.get(self._profile_key(p), 0)
+            if n == 0:
+                btn.set_tooltip_text(None)
+            elif n == 1:
+                btn.set_tooltip_text("Switch to this tab — Ctrl+click for a new one")
+            else:
+                btn.set_tooltip_text(f"Cycle {n} open tabs — Ctrl+click for a new one")
 
     def _refresh_sidebar_attention(self):
         """Pulse every sidebar row whose profile has a pane waiting on a BEL.
@@ -4757,6 +4932,7 @@ class DevFrame(Adw.Application):
         # the closed tab's pulse would stay on its sidebar row forever.
         self._refresh_sidebar_attention()
         self.notebook.remove_page(page_num)
+        self._refresh_sidebar_tooltips()   # ditto: the tab count just changed
         if last_tab:
             # switch-page won't fire when there are no pages left, so clear the
             # sidebar highlight manually — _on_tab_switched never gets called.
@@ -5496,6 +5672,7 @@ class DevFrame(Adw.Application):
         # The rows are brand new widgets, so any in-flight pulse was just
         # thrown away with the old ones — re-apply it from the pane flags.
         self._refresh_sidebar_attention()
+        self._refresh_sidebar_tooltips()
 
     def _build_expander_group(self, g_name, profiles, expanded, g_icon=''):
         expander = Gtk.Expander()
@@ -5596,6 +5773,11 @@ class DevFrame(Adw.Application):
 
         btn.set_child(content)
         btn.connect("clicked", self.on_profile_clicked, p)
+
+        lc = Gtk.GestureClick(button=1)
+        lc.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        lc.connect('pressed', self._on_profile_pressed)
+        btn.add_controller(lc)
 
         color = p.get('color', '')
         if color:
@@ -5760,7 +5942,62 @@ class DevFrame(Adw.Application):
                     return True
         return False
 
+    def _on_profile_pressed(self, gesture, _n_press, _x, _y):
+        """Record the modifier for the click about to be delivered.
+
+        Gtk.Button's 'clicked' carries no event state, so the Ctrl test has to
+        happen on the press. The controller is in the CAPTURE phase to be sure
+        it sees the sequence before the button's own gesture claims it; a
+        keyboard activation fires no gesture at all, which correctly leaves the
+        flag False."""
+        self._force_new_tab = bool(
+            gesture.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK)
+
+    def _open_panes_for_profile(self, p):
+        """[(page_num, terminal)] — one entry per tab holding a pane of this
+        profile, in notebook page order. The terminal is that tab's first
+        matching pane walked in layout order, so a merged tab always resolves
+        to the same pane rather than to whichever one was spawned first."""
+        key = self._profile_key(p)
+        found = []
+        for i in range(self.notebook.get_n_pages()):
+            for term in self._all_terminals_in(self.notebook.get_nth_page(i)):
+                meta = self.tabs.get(term)
+                if meta and self._profile_key(meta.get('profile')) == key:
+                    found.append((i, term))
+                    break
+        return found
+
+    def _switch_to_profile_tab(self, candidates):
+        """Raise the first candidate tab after the current page, wrapping, so
+        repeated clicks cycle every tab of a profile instead of sticking on the
+        leftmost one."""
+        current = self.notebook.get_current_page()
+        page, term = next((c for c in candidates if c[0] > current), candidates[0])
+
+        # _active_terminal first: _on_tab_switched keeps it when it belongs to
+        # the incoming tab, which is how the *matching* pane of a merged tab
+        # takes focus instead of whichever pane that tab last had focused.
+        self._active_terminal = term
+        self.notebook.set_current_page(page)
+        # Switching to the page already on screen emits no switch-page, so the
+        # highlight has to be recomputed here rather than left to the handler.
+        self._refresh_sidebar_highlight()
+        GLib.idle_add(lambda: GLib.idle_add(lambda: term.grab_focus() and False,
+                                            priority=GLib.PRIORITY_LOW) and False)
+
     def on_profile_clicked(self, widget, p):
+        force_new = self._force_new_tab
+        self._force_new_tab = False
+
+        if (not force_new and not self._always_launches(p)
+                and self.settings.get('sidebar_click',
+                                      DEFAULT_SETTINGS['sidebar_click']) == 'switch'):
+            candidates = self._open_panes_for_profile(p)
+            if candidates:
+                self._switch_to_profile_tab(candidates)
+                return
+
         for btn in self.active_btns:
             if btn is not widget:
                 btn.remove_css_class('active')
@@ -5809,6 +6046,10 @@ if __name__ == "__main__":
                         help='Run with an isolated temp config dir and DEBUG logging. '
                              'Bypasses single-instance guard. Settings, profiles, and '
                              'saved state in ~/.config/ttyga are left untouched.')
+    parser.add_argument('--new-instance', action='store_true',
+                        help='Start a second instance against the real ~/.config/ttyga '
+                             'instead of raising the one already running. Both instances '
+                             'overwrite app_state.json on exit — the last to close wins.')
     args = parser.parse_args()
 
     if args.dev:
@@ -5835,11 +6076,16 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.WARNING)
         app = DevFrame()
-        try:
-            app.register()
-        except GLib.Error:
-            pass  # D-Bus unavailable; proceed and let GIO sort it out
-        if app.get_is_remote():
-            print("ttyga: already running", file=sys.stderr)
-            sys.exit(1)
+        if args.new_instance:
+            # Same real config, but do not forward 'activate' to the instance
+            # already running (which would just present its window and exit).
+            app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
+        else:
+            try:
+                app.register()
+            except GLib.Error:
+                pass  # D-Bus unavailable; proceed and let GIO sort it out
+            if app.get_is_remote():
+                print("ttyga: already running", file=sys.stderr)
+                sys.exit(1)
         app.run(None)

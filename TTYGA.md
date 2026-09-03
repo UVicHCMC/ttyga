@@ -20,6 +20,12 @@ At the top of the sidebar is a search box. Start typing to filter profiles by na
 
 Profile buttons show the profile icon on the left, the name in the middle, and a `$` tag on the right for clippet profiles. If a profile has a colour set, a coloured stripe runs down the left edge of its button. The icon also appears in the tab label when the profile is open.
 
+Clicking a profile that is **already open** switches to its tab rather than launching a second copy — and in a merged tab it focuses that profile's own pane, not whichever pane you last used there. If the profile is open in several tabs, repeated clicks cycle through them in tab order. Hover the row to see which case you are in: it is tooltipped only while the profile is open.
+
+**Ctrl+click** always launches a new tab, whether or not the profile is already open. Clippets set to run in the current tab are unaffected — they never own a tab, so they always just run.
+
+If you would rather every click launch, set **Sidebar click** to Launch in Preferences.
+
 ---
 
 ## Sidebar clock and stopwatch
@@ -279,6 +285,7 @@ Open via the hamburger menu → **Preferences**.
 - **Scrollback** — Lines of terminal history kept per tab.
 - **Scroll speed** — Lines scrolled per wheel tick (1–10).
 - **Copy on selection** — Selecting text copies it to the clipboard automatically.
+- **Sidebar click** — Switch (clicking an already-open profile raises its tab; repeated clicks cycle when it is open in more than one) or Launch (every click opens a new tab, the pre-0.6.56 behaviour). Ctrl+click forces a new tab in either mode.
 - **Restore tabs on launch** — Re-open the tabs from your last session on next start. ttyga saves pane layouts, working directories, and the active tab so the session is reconstructed as closely as possible. SSH tabs reconnect automatically; tmux tabs reattach to their named session.
 
 ---
@@ -306,6 +313,7 @@ Open via the hamburger menu → **Preferences**.
 | Shortcut | Action |
 |---|---|
 | Ctrl+Shift+B | Show / hide sidebar |
+| Ctrl+click a profile | Launch a new tab even if that profile is already open |
 | Ctrl+F | Focus the profile search box |
 | Escape | Clear search, return focus to terminal |
 
