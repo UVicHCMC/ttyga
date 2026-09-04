@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.59"
+APP_VERSION = "0.6.60"
 APP_AUTHOR  = "greg"
 
 # Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
@@ -356,6 +356,12 @@ VTE_BRIGHT_WHITE = '#ffffff'   # ANSI 15
 #                | colour for the sidebar handle and pane separator.
 # accent_fg      | Text/icon colour to use on top of an accent-coloured
 #                | surface (e.g. the active profile row's label).
+# row_open_fg    | Label/icon tint for a sidebar profile row that is open in
+#                | some *other* tab — the quieter sibling of the solid
+#                | `accent` fill that marks the tab on screen. Its own key
+#                | rather than `accent` because it is text on `bg_sidebar`
+#                | rather than a fill: light's `accent` only reaches 3.2:1
+#                | there, so that theme darkens it to clear AA.
 # destructive    | Destructive-action buttons — solid fill on Adw.AlertDialog's
 #                | DESTRUCTIVE response buttons, icon tint on flat destructive
 #                | buttons (e.g. the profile editor's delete-profile button).
@@ -392,6 +398,7 @@ THEMES = {
         'border_strong':   'rgba(0,0,0,0.18)',
         'accent':          '#3584e4',
         'accent_fg':       '#ffffff',
+        'row_open_fg':     '#1c64c4',
         'destructive':     '#c01c28',
         'row_hover':       'rgba(0,0,0,0.05)',
         'row_active':      'rgba(0,0,0,0.08)',
@@ -415,6 +422,7 @@ THEMES = {
         'border_strong':   'rgba(255,255,255,0.18)',
         'accent':          '#78aeed',
         'accent_fg':       '#00305c',
+        'row_open_fg':     '#78aeed',
         'destructive':     '#ff7b63',
         'row_hover':       'rgba(255,255,255,0.05)',
         'row_active':      'rgba(255,255,255,0.10)',
@@ -438,6 +446,7 @@ THEMES = {
         'border_strong':   'rgba(255,255,255,0.14)',
         'accent':          '#88c0d0',
         'accent_fg':       '#1f2530',
+        'row_open_fg':     '#88c0d0',
         'destructive':     '#bf616a',
         'row_hover':       'rgba(255,255,255,0.04)',
         'row_active':      'rgba(136,192,208,0.16)',
@@ -616,9 +625,29 @@ headerbar splitbutton image {{
 }}
 .profile-row:hover {{ background: {t['row_hover']}; }}
 .profile-row:active {{ background: {t['row_active']}; }}
+
+/* .open marks a profile running in some tab that is NOT on screen; .active
+   marks the one that is. Two states, deliberately unequal in weight: .active
+   keeps the solid accent fill, .open only tints the label and leans on the
+   heavier weight, so a glance still finds the current tab first and the rest
+   read as "running, elsewhere" rather than competing for the same slot.
+
+   Not a left accent bar — that edge is already spoken for by the per-profile
+   `color:` border-left (see _build_profile_button), and a second bar there
+   would read as a colour the user never set.
+
+   .active is declared after .open, and both rules carry the same specificity,
+   so source order is what makes .active win on a row that is both (the
+   profile is open in the current tab *and* another one). Do not reorder. */
+.profile-row.open {{
+    color: {t['row_open_fg']};
+    font-weight: 600;
+}}
+.profile-row.open image {{ color: {t['row_open_fg']}; }}
 .profile-row.active {{
     background: {t['accent']};
     color: {t['accent_fg']};
+    font-weight: 600;
 }}
 .profile-row.active image {{ color: {t['accent_fg']}; }}
 
@@ -678,6 +707,14 @@ headerbar splitbutton image {{
 .profile-row.attention {{
     animation: sidebar-attention 1.2s ease-in-out infinite;
 }}
+/* .open is now the common case for a pulsing row — a BEL comes from a
+   background tab by definition — and row_open_fg over the term_warn peak is
+   the one pairing that goes illegible (blue on orange, ~1.4:1 in light). So
+   an .open row hands its tint back to the theme fg for the duration, which is
+   what the block above says a pulsing row is meant to look like anyway. The
+   .active pairing is left exactly as Greg signed it off on 2026-08-04. */
+.profile-row.open.attention {{ color: {t['fg']}; }}
+.profile-row.open.attention image {{ color: {t['fg']}; }}
 
 /* Tabs -------------------------------------------------------------------- */
 
@@ -2952,6 +2989,7 @@ class DevFrame(Adw.Application):
         self.expanders   = {}      # group name -> Gtk.Expander (expanders layout)
         self.window      = None
         self.active_btns = set()   # currently highlighted profile rows (one tab can host several, once merged)
+        self.open_btns   = set()   # rows tinted as "open in another tab"
         self.tab_count   = 0
         # Per-terminal metadata: {terminal: {'label': Gtk.Label, 'dot': Gtk.Image,
         #                                    'user': str, 'host': str, 'avatar': str|None,
@@ -2961,6 +2999,7 @@ class DevFrame(Adw.Application):
         self.settings    = self._load_settings()
         self._sidebar_toggle_btn = None
         self.active_profile_keys = set()   # {(name, group)} of highlighted profiles
+        self.open_profile_keys   = set()   # {(name, group)} open in a background tab
         self._force_new_tab      = False   # Ctrl held on the current sidebar click
         self._profile_buttons   = []     # [(btn, profile)] for search filtering
         self._flat_groups       = []     # [(header, vbox, g_name)] for flat layout
@@ -3463,6 +3502,11 @@ class DevFrame(Adw.Application):
                     self.add_tab(profile=by_key.get(key), focus=False)
             if 0 <= active_tab_index < self.notebook.get_n_pages():
                 self.notebook.set_current_page(active_tab_index)
+            # Belt and braces: every add_tab above emitted a switch-page, but
+            # the last one to fire may not have been for the page we end on
+            # (restoring a single tab, or landing back on the page already
+            # current, emits nothing). One recompute settles it.
+            self._refresh_sidebar_highlight()
             term = self._get_active_terminal()
             if term:
                 GLib.idle_add(lambda: term.grab_focus() and False)
@@ -4284,28 +4328,60 @@ class DevFrame(Adw.Application):
         self._update_sidebar_highlight(tab_root)
 
     def _update_sidebar_highlight(self, tab_root):
-        """Highlight every sidebar row whose profile is open as a pane in
-        tab_root — a merged tab can host more than one profile at once."""
+        """Mark every sidebar row whose profile is running anywhere.
+
+        Two states. `.active` is every profile open as a pane in tab_root —
+        the tab on screen, and a merged tab can host more than one at once.
+        `.open` is every profile running in some *other* tab.
+
+        The second state exists because `.active` alone made the sidebar go
+        blank the moment you switched to a plain tab, which reads as the
+        profiles having been closed rather than as "not on screen". Derived
+        from self.tabs on every call rather than tracked incrementally, for
+        the same reason _refresh_sidebar_attention() is: a set of buttons
+        goes stale when a background tab closes or _build_sidebar() throws
+        _profile_buttons away.
+
+        "Open" here means "somewhere to switch to", matching what
+        _refresh_sidebar_tooltips() counts — so an in-place clippet, which
+        owns no tab of its own, is never marked."""
         keys = set()
+        open_keys = set()
         for t, m in self.tabs.items():
-            if m.get('tab_root') is not tab_root:
+            key = self._profile_key(m.get('profile'))
+            if not key:
                 continue
-            profile = m.get('profile')
-            if profile:
-                keys.add((profile.get('name'), profile.get('group', 'General')))
+            if m.get('tab_root') is tab_root:
+                keys.add(key)
+            else:
+                open_keys.add(key)
+        open_keys -= keys
 
         for btn in self.active_btns:
             btn.remove_css_class('active')
+        for btn in self.open_btns:
+            btn.remove_css_class('open')
         self.active_btns = set()
+        self.open_btns = set()
         self.active_profile_keys = keys
+        self.open_profile_keys = open_keys
 
         for btn, p in self._profile_buttons:
-            key = self._profile_key(p)
-            if key in keys:
-                btn.add_css_class('active')
-                self.active_btns.add(btn)
+            self._apply_row_state(btn, p)
 
         self._refresh_sidebar_tooltips()
+
+    def _apply_row_state(self, btn, p):
+        """Put the .active / .open classes on one row from the current key
+        sets. Shared by _update_sidebar_highlight() and the row-building path,
+        so a sidebar rebuilt mid-session comes back marked."""
+        key = self._profile_key(p)
+        if key in self.active_profile_keys:
+            btn.add_css_class('active')
+            self.active_btns.add(btn)
+        elif key in self.open_profile_keys and not self._always_launches(p):
+            btn.add_css_class('open')
+            self.open_btns.add(btn)
 
     def _refresh_sidebar_highlight(self):
         """Recompute highlighting for whichever tab is currently on screen."""
@@ -4932,15 +5008,24 @@ class DevFrame(Adw.Application):
         # the closed tab's pulse would stay on its sidebar row forever.
         self._refresh_sidebar_attention()
         self.notebook.remove_page(page_num)
-        self._refresh_sidebar_tooltips()   # ditto: the tab count just changed
         if last_tab:
             # switch-page won't fire when there are no pages left, so clear the
-            # sidebar highlight manually — _on_tab_switched never gets called.
+            # sidebar marks manually — _on_tab_switched never gets called.
             for btn in self.active_btns:
                 btn.remove_css_class('active')
+            for btn in self.open_btns:
+                btn.remove_css_class('open')
             self.active_btns = set()
+            self.open_btns = set()
             self.active_profile_keys = set()
+            self.open_profile_keys = set()
+            self._refresh_sidebar_tooltips()   # ditto: the tab count changed
             self._show_welcome()
+        else:
+            # Ditto again, and it now matters twice over: with a page gone the
+            # tooltip counts are stale, and so is the .open tint on whatever
+            # that tab was running. _refresh_sidebar_highlight() redoes both.
+            self._refresh_sidebar_highlight()
 
     def _get_active_terminal(self):
         if self._active_terminal and self._active_terminal in self.tabs:
@@ -5643,6 +5728,7 @@ class DevFrame(Adw.Application):
             self.sidebar_box.remove(child)
         self.expanders.clear()
         self.active_btns = set()
+        self.open_btns = set()
         self._profile_buttons.clear()
         self._flat_groups.clear()
 
@@ -5793,9 +5879,7 @@ class DevFrame(Adw.Application):
         btn.add_controller(rc)
 
         self._profile_buttons.append((btn, p))
-        if (p.get('name'), p.get('group', 'General')) in self.active_profile_keys:
-            btn.add_css_class('active')
-            self.active_btns.add(btn)
+        self._apply_row_state(btn, p)
 
         return btn
 

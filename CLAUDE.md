@@ -27,14 +27,15 @@ Bump `APP_VERSION` in `ttyga.py` whenever meaningful changes land — don't ask,
 
 ## Tests
 
-No test runner and no CI — two standalone scripts, run directly:
+No test runner and no CI — three standalone scripts, run directly:
 
 ```bash
-python3 tests/test_bg_image_css.py     # headless, <1s
-python3 tests/test_pane_margins.py     # opens a window, ~5s
+python3 tests/test_bg_image_css.py        # headless, <1s
+python3 tests/test_pane_margins.py        # opens a window, ~5s
+python3 tests/test_sidebar_open_marks.py  # opens a window, ~7s
 ```
 
-They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in two fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
+They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in three fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
 
 `test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one.
 
@@ -97,6 +98,34 @@ A `Gtk.Paned` separator's drag grab zone extends *into* the adjacent pane and cl
 Two things not to re-derive:
 - **CSS padding does not work.** VTE 0.76 shifts glyphs but still maps mouse coordinates as if the padding weren't there, so clicks land on the wrong cell. A margin works because margin space is outside the widget allocation. Do not retry CSS.
 - Walking *all* ancestors, not just the immediate parent, is exact — a leaf that doesn't reach a subtree's boundary only fails to because a nearer separator already earned it the same margin.
+
+### Sidebar running-state marks
+
+Two CSS classes on `.profile-row`, both recomputed from `self.tabs` by
+`_update_sidebar_highlight(tab_root)`:
+
+- `.active` — the profile is open in the tab **on screen** (a merged tab can
+  host several at once). Solid accent fill.
+- `.open` — the profile is running in some **other** tab. Label and icon
+  tinted `row_open_fg`, no fill. Mutually exclusive with `.active`.
+
+`_apply_row_state()` puts them on one row from `active_profile_keys` /
+`open_profile_keys`, so a sidebar rebuilt mid-session (`reload_profiles()`)
+comes back marked.
+
+The marks normally ride on `switch-page`. Three paths change what is current
+without emitting it, and each recomputes by hand — break one and a stale tint
+sticks forever:
+
+- `_do_close_tab()` closing a **background** page (the current child never
+  changes) → `_refresh_sidebar_highlight()`
+- `_do_close_tab()` closing the **last** page (no page left to switch to) →
+  clears both sets inline
+- `_switch_to_profile_tab()` landing on the page already current
+
+`.attention` (the BEL pulse) overrides both. An `.open` row hands its tint
+back to the theme `fg` for the pulse's duration — `row_open_fg` over the
+`term_warn` peak is the one illegible pairing.
 
 ### Key methods in DevFrame
 
