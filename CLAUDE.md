@@ -27,15 +27,17 @@ Bump `APP_VERSION` in `ttyga.py` whenever meaningful changes land — don't ask,
 
 ## Tests
 
-No test runner and no CI — three standalone scripts, run directly:
+No test runner and no CI — five standalone scripts, run directly. Keep this list in step with `tests/`; it has gone stale before, and a script nobody knows about is a script nobody runs:
 
 ```bash
 python3 tests/test_bg_image_css.py        # headless, <1s
+python3 tests/test_stopwatch.py           # opens a window, ~4s
 python3 tests/test_pane_margins.py        # opens a window, ~5s
+python3 tests/test_sidebar_switch.py      # opens a window, ~7s
 python3 tests/test_sidebar_open_marks.py  # opens a window, ~7s
 ```
 
-They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in three fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
+They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in a few fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
 
 `test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one.
 
