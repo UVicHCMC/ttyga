@@ -323,10 +323,18 @@ Open via the hamburger menu → **Preferences**.
 |---|---|
 | Ctrl+Shift+C | Copy selection |
 | Ctrl+Shift+V | Paste |
+| Shift+drag | Select text in a program that is using the mouse |
+| Shift+middle-click | Paste in a program that is using the mouse |
 | Ctrl++ / Ctrl+= | Zoom font in |
 | Ctrl+− | Zoom font out |
 | Ctrl+0 | Reset font zoom |
 | Ctrl+scroll | Zoom font in / out |
+
+Full-screen programs that track the mouse — `claude`, `tmux` with `mouse on`,
+`htop` — receive your clicks themselves, so an ordinary drag selects nothing
+and middle-click does not paste. Hold **Shift** and ttyga handles the mouse
+instead of passing it through. ttyga tells you this the first time it notices
+a drag that selected nothing.
 
 ---
 

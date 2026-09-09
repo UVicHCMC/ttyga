@@ -27,7 +27,7 @@ Bump `APP_VERSION` in `ttyga.py` whenever meaningful changes land — don't ask,
 
 ## Tests
 
-No test runner and no CI — five standalone scripts, run directly. Keep this list in step with `tests/`; it has gone stale before, and a script nobody knows about is a script nobody runs:
+No test runner and no CI — six standalone scripts, run directly. Keep this list in step with `tests/`; it has gone stale before, and a script nobody knows about is a script nobody runs:
 
 ```bash
 python3 tests/test_bg_image_css.py        # headless, <1s
@@ -35,9 +35,10 @@ python3 tests/test_stopwatch.py           # opens a window, ~4s
 python3 tests/test_pane_margins.py        # opens a window, ~5s
 python3 tests/test_sidebar_switch.py      # opens a window, ~7s
 python3 tests/test_sidebar_open_marks.py  # opens a window, ~7s
+python3 tests/test_mouse_grab_hint.py     # opens a window, ~5s
 ```
 
-They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in a few fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
+They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`, `_on_terminal_mouse_event`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in a few fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
 
 `test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one.
 
@@ -90,6 +91,7 @@ tab_root (Gtk.Box, hexpand+vexpand)
 - `tab_root` — the top-level `Gtk.Box` for this tab (used to find siblings)
 - `spawn_dir` — the directory the terminal was launched from (fallback for cwd when OSC 7 is unavailable)
 - `pane_bar` — the `Gtk.Box` header strip above the terminal; hidden when only one pane
+- `select_hint_at` — monotonic time the mouse-grab hint last fired for this pane (absent until it has); lives here so it is reaped with the pane
 
 `_update_pane_bars(tab_root)` is the single hook run at every structural change (restore, both `add_tab` paths, split, close, merge). It shows/hides the pane bars **and** calls `_update_pane_margins()` per terminal.
 
@@ -152,6 +154,34 @@ To remove a child from `Gtk.Paned`, always use:
 paned.set_start_child(None)   # or set_end_child(None)
 ```
 **Never** call `child.unparent()` on a Paned child. GTK4's internal remove vfunc calls `gtk_widget_unparent()` again, causing a segfault.
+
+### Mouse-reporting programs and the Shift override
+
+A program that enables xterm mouse reporting (claude, tmux with `mouse on`,
+htop) takes every button event, so **dragging selects nothing and middle-click
+does not paste** — there is no clipboard bug to chase, the selection simply
+never happens. VTE's own escape hatch is to hold **Shift**, which makes it
+handle the event locally instead of forwarding it.
+
+Two consequences, both already handled:
+
+- **Every terminal key controller must be CAPTURE phase.** VTE installs its own
+  key controller at BUBBLE, and capture always runs first, so a bubble-phase
+  handler of ours loses the key to the child. This silently killed
+  Ctrl+Shift+C/V inside any full-screen program until 0.6.61.
+  `tests/test_mouse_grab_hint.py` asserts the phases.
+- `_on_terminal_mouse_event` notices a button-1 drag longer than
+  `SELECT_HINT_MIN_PX` that left no selection, and toasts the Shift hint
+  (rate-limited by `SELECT_HINT_COOLDOWN`, stored per pane in `self.tabs` so a
+  closed pane takes its state with it). VTE 0.76 exposes **no** way to ask
+  whether the child enabled mouse reporting — no property, no signal — and
+  ttyga never sees the output stream, so the state cannot be read; it is
+  inferred from the failed drag instead. Don't go looking for the API again.
+
+The probe is a `Gtk.EventControllerLegacy` at CAPTURE that always returns
+`False`. It must **not** become a `Gtk.Gesture`: a gesture joins VTE's gesture
+grouping and can claim the pointer sequence — the same failure `PANE_GUTTER`
+exists to work around.
 
 ### Focus grab timing
 

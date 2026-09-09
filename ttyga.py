@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.60"
+APP_VERSION = "0.6.61"
 APP_AUTHOR  = "greg"
 
 # Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
@@ -56,6 +56,12 @@ APP_AUTHOR  = "greg"
 # allocation, whereas VTE 0.76 shifts glyphs for padding but still maps mouse
 # coordinates as if it were not there. Applied per-edge by _update_pane_margins.
 PANE_GUTTER = 12
+
+# A drag that covers at least this many pixels and still leaves no selection
+# means a mouse-reporting program (claude, tmux, htop) ate the sequence — see
+# _on_terminal_mouse_event. Generous, so a sloppy click never trips the hint.
+SELECT_HINT_MIN_PX    = 20
+SELECT_HINT_COOLDOWN  = 30.0   # seconds between hints for the same terminal
 
 _LOCAL_USER = os.environ.get('USER') or os.environ.get('LOGNAME', '')
 _LOCAL_HOST = socket.gethostname()
@@ -3004,6 +3010,8 @@ class DevFrame(Adw.Application):
         self._profile_buttons   = []     # [(btn, profile)] for search filtering
         self._flat_groups       = []     # [(header, vbox, g_name)] for flat layout
         self._font_zoom_delta   = 0      # ephemeral pt offset from saved font size
+        self._toast_overlay     = None   # set in do_activate
+        self._drag_origin       = None   # button-1 press point, for the select hint
         self._var_history       = {}     # {history_key: {var_name: last_value}}
         self._active_terminal   = None   # Vte.Terminal with keyboard focus
         self._window_active     = True   # tracks whether the ttyga window has OS focus
@@ -3548,7 +3556,9 @@ class DevFrame(Adw.Application):
         sidebar_visible = state.get('sidebar_visible', False)
         self.split_view.set_show_sidebar(sidebar_visible)
         self._sidebar_toggle_btn.set_active(sidebar_visible)
-        toolbar.set_content(self.split_view)
+        self._toast_overlay = Adw.ToastOverlay()
+        self._toast_overlay.set_child(self.split_view)
+        toolbar.set_content(self._toast_overlay)
 
         # Sidebar pane — horizontal so the drag handle sits at the right edge.
         sidebar_outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -4251,7 +4261,12 @@ class DevFrame(Adw.Application):
         terminal.connect('bell', self._on_terminal_bell)
         terminal.connect('child-exited', self._on_child_exited)
 
+        # Capture phase, for the same reason as the scroll handler below: a
+        # bubble-phase controller sits behind VTE's own, so VTE claims
+        # Ctrl+Shift+C/V and writes it to the child instead. That left no
+        # working copy/paste at all in a full-screen program.
         key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_ctrl.connect("key-pressed", self.on_key_pressed)
         terminal.add_controller(key_ctrl)
 
@@ -4275,6 +4290,17 @@ class DevFrame(Adw.Application):
             flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll_ctrl.connect('scroll', self._on_terminal_scroll)
         terminal.add_controller(scroll_ctrl)
+
+        # Pure observer: watches button 1 to notice a drag that produced no
+        # selection. Gtk.EventControllerLegacy never claims a sequence, and
+        # this handler always returns False, so VTE's own selection gesture is
+        # untouched. A Gtk.Gesture here would join the grouping and could steal
+        # the sequence — the same class of bug PANE_GUTTER exists to work
+        # around. Do not swap it for one.
+        mouse_probe = Gtk.EventControllerLegacy()
+        mouse_probe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        mouse_probe.connect('event', self._on_terminal_mouse_event)
+        terminal.add_controller(mouse_probe)
 
         spawn_dir = str(Path(cwd).expanduser()) if cwd else os.environ.get('HOME')
         spawn_env = None
@@ -4300,6 +4326,64 @@ class DevFrame(Adw.Application):
             _spawn_cb,
         )
         return terminal
+
+    def _toast(self, message, timeout=4):
+        """Transient message over the terminal area."""
+        overlay = getattr(self, '_toast_overlay', None)
+        if overlay is None:
+            return
+        toast = Adw.Toast(title=message)
+        toast.set_timeout(timeout)
+        overlay.add_toast(toast)
+
+    def _on_terminal_mouse_event(self, controller, event):
+        """Notice a drag that selected nothing and say why.
+
+        VTE exposes no way to ask whether the child has enabled mouse
+        reporting — 0.76 has no property and no signal for it, and ttyga never
+        sees the output stream to catch the DECSET itself. So infer it from the
+        outcome: a real drag over a terminal that is not mouse-grabbed always
+        leaves a selection behind. Shift is VTE's own override, so a drag that
+        already used it is not worth commenting on.
+
+        Always returns False — this only watches."""
+        etype = event.get_event_type()
+        if etype == Gdk.EventType.BUTTON_PRESS:
+            if event.get_button() == Gdk.BUTTON_PRIMARY:
+                self._drag_origin = event.get_position()[1:]
+            return False
+        if etype != Gdk.EventType.BUTTON_RELEASE:
+            return False
+        if event.get_button() != Gdk.BUTTON_PRIMARY:
+            return False
+
+        origin = getattr(self, '_drag_origin', None)
+        self._drag_origin = None
+        if origin is None:
+            return False
+        if event.get_modifier_state() & Gdk.ModifierType.SHIFT_MASK:
+            return False
+
+        x, y = event.get_position()[1:]
+        if abs(x - origin[0]) < SELECT_HINT_MIN_PX and abs(y - origin[1]) < SELECT_HINT_MIN_PX:
+            return False
+
+        terminal = controller.get_widget()
+        if terminal.get_has_selection():
+            return False
+
+        # Cooldown lives in the tab metadata, not an instance dict keyed by
+        # terminal: self.tabs is already reaped when a pane closes, so this
+        # cannot accumulate dead widgets.
+        meta = self.tabs.get(terminal)
+        if meta is None:
+            return False
+        now = time.monotonic()
+        if now - meta.get('select_hint_at', 0.0) >= SELECT_HINT_COOLDOWN:
+            meta['select_hint_at'] = now
+            self._toast("This program is using the mouse — "
+                        "hold Shift to select, Ctrl+Shift+V to paste")
+        return False
 
     def _on_term_selection_changed(self, terminal):
         if self.settings.get('copy_on_selection', True) and terminal.get_has_selection():
@@ -6016,7 +6100,7 @@ class DevFrame(Adw.Application):
     def on_key_pressed(self, controller, keyval, keycode, state):
         mask = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
         if (state & mask) == mask:
-            terminal = self._get_active_terminal()
+            terminal = controller.get_widget()
             if terminal:
                 if keyval in (Gdk.KEY_C, Gdk.KEY_c):
                     terminal.copy_clipboard_format(Vte.Format.TEXT)
