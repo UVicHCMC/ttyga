@@ -40,6 +40,22 @@ While the stopwatch is showing, three buttons take the icon's place:
 
 Switching back to the clock does **not** stop the stopwatch — it keeps counting in the background, and the icon lights up to show it's still running. Click the icon again to bring the stopwatch back up without losing time; if it was paused, it comes back paused at the same value rather than restarting.
 
+### Usage-limit countdown
+
+If a Claude Code session hits its usage limit, the same display can count down to the moment the limit resets. It needs the hook described under **Claude Code usage-limit countdown**, in the Background notifications section; without it nothing here ever appears.
+
+The limit is account-wide, not per-session, so there is one countdown for the whole window rather than one per tab — every Claude tab is blocked by the same wall at the same moment.
+
+- The countdown takes over the clock display when the limit is hit, counting down in hours:minutes:seconds
+- The sub-line shows the reset time, and what Claude Code's own auto-resume did: `claude resumed`, `press enter`, or `not resuming`
+- Two buttons replace the stopwatch icon: **dismiss** the countdown, or switch back to the **clock**
+- Switched back to the clock, the reset time takes the date's place on the sub-line, so it is still visible. Click the clock to bring the countdown back
+- A **running** stopwatch is never taken off screen for a new countdown; the reset time is appended to its sub-line instead
+
+When the reset time arrives the display pulses red, a desktop notification fires, and after five minutes it quiets down and restores whatever was showing before. Dismissing it early does the same thing immediately.
+
+A **credit balance** exhaustion has no reset time to wait for, so it starts no countdown — the sub-line just reads `credit balance too low`.
+
 ---
 
 ## Profiles
@@ -230,6 +246,44 @@ subprocess.run(['notify-send', '-a', 'ttyga', title, message], check=False)
 Make it executable: `chmod +x ~/.local/bin/ttyga-claude-notify`.
 
 This hook fires independently of ttyga's own activity detection — it works even when the terminal is in the foreground.
+
+### Claude Code usage-limit countdown
+
+This is a second, separate hook, and it feeds the **Usage-limit countdown** described in the sidebar clock section. `install.sh` puts the script at `~/.local/bin/ttyga-quota-hook`; you register it yourself, because `~/.claude/settings.json` is Claude Code's file rather than ttyga's:
+
+```json
+{
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "/home/greg/.local/bin/ttyga-quota-hook"}
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "/home/greg/.local/bin/ttyga-quota-hook"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Both events are needed, and for different things. `StopFailure` fires when a turn ends in an error and is what catches the limit itself. `Notification` is only there to label the countdown with what Claude Code's own auto-resume decided to do. Registering it alongside an existing `Notification` hook is fine — Claude Code runs every hook that matches.
+
+The hook writes `~/.config/ttyga/quota.json`, which is the whole interface between the two programs; ttyga watches that file. Nothing else is shared, and the hook never writes anything if the turn failed for some other reason.
+
+To see what it would record without writing anything, run it by hand:
+
+```bash
+echo '{"hook_event_name":"StopFailure","error":"rate_limit","transcript_path":"…"}' \
+  | ttyga-quota-hook --dry-run --verbose
+```
 
 ---
 

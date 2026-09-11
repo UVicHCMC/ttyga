@@ -21,6 +21,7 @@ cp "$SCRIPT_DIR/TTYGA_TECH.md"        "$BUNDLE/"
 cp "$SCRIPT_DIR/profiles.yaml.example" "$BUNDLE/"
 
 cp -r "$SCRIPT_DIR/ttyga-icon-theme"  "$BUNDLE/"
+cp -r "$SCRIPT_DIR/hooks"             "$BUNDLE/"
 
 cd "$STAGING"
 zip -r "$OUTFILE" ttyga

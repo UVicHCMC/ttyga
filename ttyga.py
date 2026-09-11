@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME    = "ttyga"
 APP_ID      = "ca.greg.ttyga"
-APP_VERSION = "0.6.61"
+APP_VERSION = "0.6.62"
 APP_AUTHOR  = "greg"
 
 # Inset, in px, between a terminal and an adjacent Gtk.Paned separator. The
@@ -77,6 +77,7 @@ CONFIG_DIR    = Path(GLib.get_user_config_dir()) / APP_NAME
 CONFIG_FILE   = CONFIG_DIR / "profiles.yaml"
 SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
 STATE_FILE    = CONFIG_DIR / "app_state.json"
+QUOTA_FILE    = CONFIG_DIR / "quota.json"   # written by hooks/ttyga-quota-hook.py
 LEGACY_CONFIG    = Path(__file__).parent / "profiles.yaml"
 MONO_ICON_NAME   = "ttyga-mono"   # themed icon name (ttyga-icon-theme/.../apps)
 
@@ -137,6 +138,13 @@ CLOCK_DATE_MAX_PX = 22    # sidebar clock: largest date font size, pixels
 
 CLOCK_CONTROL_ICON_PX       = 28   # clock-mode single start-stopwatch button
 CLOCK_CONTROL_ICON_PX_SMALL = 18   # stopwatch-mode 3-button stack
+
+# Usage-limit countdown. quota.json is also re-read on a timer, not only on
+# the Gio.FileMonitor signal: the hook replaces the file by rename, and a
+# monitor can miss that on some filesystems. Nothing here is urgent, so the
+# interval is generous.
+QUOTA_POLL_S     = 60     # fallback re-read of quota.json, seconds
+QUOTA_ALARM_LOUD = 300    # seconds the expiry alarm pulses before going quiet
 
 PROFILE_ICON_PX  = 24     # sidebar profile button icon size
 
@@ -3017,8 +3025,20 @@ class DevFrame(Adw.Application):
         self._window_active     = True   # tracks whether the ttyga window has OS focus
         self._notified_roots    = set()  # tab_roots already notified this episode
 
+        # Usage-limit countdown. The state lives in quota.json, written by
+        # hooks/ttyga-quota-hook.py — not in app_state.json, because it
+        # outlives any one ttyga run and another process owns it.
+        self._quota           = {}     # last parsed quota.json, {} when none
+        self._quota_monitor   = None   # Gio.FileMonitor — MUST stay referenced
+        self._quota_alarm_at  = None   # time.monotonic() when the alarm fired
+        self._quota_ack       = None   # resets_at the user has dismissed
+        self._quota_notified  = None   # resets_at already sent to notify-send
+        self._quota_prev_mode = None   # mode to restore once the alarm clears
+        self._quota_pulse     = False  # alarm pulse phase, flipped each tick
+        self._quota_shown     = None   # resets_at already auto-presented once
+
         # Sidebar stopwatch (session-scoped, not persisted to app_state.json)
-        self._clock_mode           = 'clock'   # 'clock' | 'stopwatch'
+        self._clock_mode           = 'clock'   # 'clock' | 'stopwatch' | 'quota'
         self._stopwatch_running    = False
         self._stopwatch_elapsed    = 0.0   # accumulated seconds from completed segments
         self._stopwatch_start_mono = None  # time.monotonic() when the current segment began
@@ -3623,12 +3643,20 @@ class DevFrame(Adw.Application):
         self.clock_date_area.set_draw_func(self._draw_clock_date)
         clock_col.append(self.clock_date_area)
 
+        # Clicking the clock brings a pending usage-limit countdown back
+        # on screen. A plain Gtk.GestureClick is safe here — no VTE widget
+        # is involved, so there is no gesture-grouping hazard.
+        clock_click = Gtk.GestureClick()
+        clock_click.connect('pressed', self._on_clock_area_clicked)
+        clock_col.add_controller(clock_click)
+
         clock_row.append(clock_col)
         clock_row.append(self._build_stopwatch_controls())
 
         sidebar_inner.append(clock_row)
         self._update_clock()
         GLib.timeout_add_seconds(1, self._update_clock)
+        self._start_quota_watch()
 
         sidebar_outer.append(sidebar_inner)
 
@@ -5623,14 +5651,223 @@ class DevFrame(Adw.Application):
     def _update_clock(self):
         now = datetime.now()
         self._clock_time_text = now.strftime('%H:%M:%S')
-        if self._clock_mode == 'stopwatch':
+        # Before choosing a subtitle: this can switch mode or fire the alarm.
+        self._tick_quota()
+        if self._clock_mode == 'quota':
+            self._clock_date_text = self._quota_subtitle()
+        elif self._clock_mode == 'stopwatch':
             started = self._stopwatch_started_at
-            self._clock_date_text = f"started {started.strftime('%H:%M')}" if started else ''
+            parts = []
+            if started:
+                parts.append(f"started {started.strftime('%H:%M')}")
+            note = self._quota_note(short=True)
+            if note:
+                parts.append(note)
+            self._clock_date_text = ' \u00b7 '.join(parts)
         else:
-            self._clock_date_text = now.strftime('%a %b %d %Y')
+            # A pending countdown displaces the date: it is the more useful
+            # of the two, and it says so without needing a mode switch.
+            self._clock_date_text = self._quota_note() or now.strftime('%a %b %d %Y')
         self.clock_time_area.queue_draw()
         self.clock_date_area.queue_draw()
         return True
+
+    # ----- usage-limit countdown -------------------------------------------
+    #
+    # quota.json is written by hooks/ttyga-quota-hook.py when a Claude Code
+    # session hits a usage limit. The limit is account-wide, not per-session,
+    # so this is one countdown for the whole app rather than per-tab state:
+    # every claude tab is blocked by the same wall at the same moment.
+
+    def _start_quota_watch(self):
+        """Read quota.json now, then watch it. Called once, after the clock
+        widgets exist — _load_quota() redraws them."""
+        self._load_quota()
+        try:
+            gfile = Gio.File.new_for_path(str(QUOTA_FILE))
+            # The monitor must stay referenced on self. A Gio.FileMonitor
+            # that goes out of scope is finalised and silently stops
+            # delivering 'changed' — no error, just a countdown that never
+            # appears.
+            self._quota_monitor = gfile.monitor_file(Gio.FileMonitorFlags.NONE, None)
+            self._quota_monitor.connect('changed', self._on_quota_file_changed)
+        except GLib.Error as exc:
+            logger.debug('quota file monitor unavailable: %s', exc)
+        GLib.timeout_add_seconds(QUOTA_POLL_S, self._poll_quota)
+
+    def _on_quota_file_changed(self, monitor, gfile, other_file, event_type):
+        self._load_quota()
+
+    def _poll_quota(self):
+        self._load_quota()
+        return True
+
+    def _load_quota(self):
+        """Re-read quota.json. Absent, unreadable and malformed all mean
+        'no countdown' — the hook writes it atomically, but it is still a
+        file another process owns."""
+        try:
+            with open(QUOTA_FILE, 'r') as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        previous = self._quota.get('resets_at')
+        self._quota = data
+        if data.get('resets_at') != previous:
+            # A different limit: an alarm still showing belongs to the old
+            # one. _quota_ack needs no reset — it is keyed to a resets_at.
+            self._quota_alarm_at = None
+            self._quota_pulse    = False
+            self._quota_shown    = None
+        self._update_clock()
+
+    def _quota_reset_at(self):
+        """The pending reset as epoch seconds, or None.
+
+        None covers all the not-counting-down cases: no file, a credit
+        exhaustion (no reset to wait for), and a countdown the user has
+        already dismissed."""
+        resets_at = self._quota.get('resets_at')
+        if not isinstance(resets_at, (int, float)):
+            return None
+        if self._quota_ack == resets_at:
+            return None
+        return resets_at
+
+    def _quota_seconds_left(self):
+        resets_at = self._quota_reset_at()
+        if resets_at is None:
+            return 0
+        return max(0, int(resets_at - time.time()))
+
+    def _quota_reset_hhmm(self):
+        resets_at = self._quota_reset_at()
+        if resets_at is None:
+            return ''
+        return datetime.fromtimestamp(resets_at).strftime('%H:%M')
+
+    def _quota_outcome_note(self):
+        """What Claude Code's own auto-resume did, if it has reported yet."""
+        return {
+            'resumed':  'claude resumed',
+            'stale':    'press enter',
+            'disabled': 'not resuming',
+        }.get(self._quota.get('outcome'), '')
+
+    def _quota_subtitle(self):
+        """The sub-line while the countdown is on screen."""
+        outcome = self._quota_outcome_note()
+        if self._quota_alarm_at is not None:
+            return f'limit reset \u00b7 {outcome}' if outcome else 'limit reset'
+        base = f'resets {self._quota_reset_hhmm()}'
+        return f'{base} \u00b7 {outcome}' if outcome else base
+
+    def _quota_note(self, short=False):
+        """The sub-line in the other two modes: '' when there is nothing to
+        say. Kept short in stopwatch mode, where it shares the line."""
+        if self._quota_reset_at() is not None:
+            hhmm = self._quota_reset_hhmm()
+            return f'limit {hhmm}' if short else f'limit resets {hhmm}'
+        if self._quota.get('kind') == 'credit':
+            # No reset to count down to — this one needs a card, not a wait.
+            return 'credit low' if short else 'credit balance too low'
+        return ''
+
+    def _set_clock_mode(self, mode):
+        """Mode names and Gtk.Stack page names are deliberately the same."""
+        self._clock_mode = mode
+        self._sw_control_stack.set_visible_child_name(mode)
+
+    def _tick_quota(self):
+        """Run once per clock tick. Presents the countdown, fires the alarm
+        when the reset arrives, and quiets itself afterwards."""
+        resets_at = self._quota_reset_at()
+
+        if resets_at is None:
+            if self._clock_mode == 'quota':
+                self._leave_quota_mode()
+            return
+
+        if time.time() < resets_at:
+            # Present it once per limit. Once is deliberate: if the user
+            # switches back to the clock, that decision stands.
+            if self._quota_shown != resets_at and self._clock_mode != 'quota':
+                self._enter_quota_mode(steal_stopwatch=False)
+            self._quota_shown = resets_at
+            return
+
+        if self._quota_alarm_at is None:
+            self._fire_quota_alarm(resets_at)
+            return
+
+        if time.monotonic() - self._quota_alarm_at > QUOTA_ALARM_LOUD:
+            # Stop after a few minutes rather than leaving 00:00:00 on the
+            # sidebar for the rest of the day.
+            self._dismiss_quota()
+            return
+        self._quota_pulse = not self._quota_pulse
+
+    def _enter_quota_mode(self, steal_stopwatch=True):
+        if self._clock_mode == 'stopwatch' and self._stopwatch_running \
+                and not steal_stopwatch:
+            # Don't take a running stopwatch off screen just to announce a
+            # wait; the subtitle carries the reset time in stopwatch mode.
+            return
+        if self._clock_mode != 'quota':
+            self._quota_prev_mode = self._clock_mode
+        self._set_clock_mode('quota')
+
+    def _leave_quota_mode(self):
+        self._set_clock_mode(self._quota_prev_mode or 'clock')
+        self._quota_prev_mode = None
+
+    def _fire_quota_alarm(self, resets_at):
+        """The reset time has arrived."""
+        self._quota_alarm_at = time.monotonic()
+        self._quota_pulse    = True
+        # Takes over even from a running stopwatch: this is the whole point
+        # of the feature, the stopwatch keeps counting either way, and the
+        # alarm restores the previous mode when it quiets.
+        self._enter_quota_mode(steal_stopwatch=True)
+        if self._quota_notified == resets_at:
+            return
+        self._quota_notified = resets_at
+        outcome = self._quota_outcome_note()
+        body = 'Claude usage limit has reset'
+        if outcome:
+            body = f'{body} \u00b7 {outcome}'
+        try:
+            subprocess.Popen(
+                ['notify-send', '-a', 'ttyga', 'ttyga', body],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            pass
+
+    def _dismiss_quota(self):
+        resets_at = self._quota.get('resets_at')
+        if isinstance(resets_at, (int, float)):
+            self._quota_ack = resets_at
+        self._quota_alarm_at = None
+        self._quota_pulse    = False
+        self._leave_quota_mode()
+
+    def _on_quota_dismiss_clicked(self, btn):
+        self._dismiss_quota()
+        self._update_clock()
+
+    def _on_quota_show_clock_clicked(self, btn):
+        # Leaves the countdown running — only stops showing it.
+        self._set_clock_mode('clock')
+        self._quota_prev_mode = None
+        self._update_clock()
+
+    def _on_clock_area_clicked(self, gesture, n_press, x, y):
+        """Click the clock to bring a pending countdown back on screen."""
+        if self._clock_mode != 'quota' and self._quota_reset_at() is not None:
+            self._enter_quota_mode(steal_stopwatch=True)
+            self._update_clock()
 
     def _stopwatch_seconds(self):
         if self._stopwatch_running:
@@ -5695,6 +5932,32 @@ class DevFrame(Adw.Application):
         stopwatch_controls.append(show_clock_btn)
 
         self._sw_control_stack.add_named(stopwatch_controls, 'stopwatch')
+
+        # Quota-countdown page. Two small buttons, matching the stopwatch
+        # page's shape so the homogeneous stack's size — and therefore the
+        # clock's available width — does not change with the mode.
+        quota_controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                 spacing=2, valign=Gtk.Align.CENTER)
+
+        dismiss_btn = Gtk.Button()
+        dismiss_btn.add_css_class('flat')
+        dismiss_btn.set_tooltip_text('Dismiss the usage-limit countdown')
+        dismiss_img = Gtk.Image.new_from_icon_name('window-close-symbolic')
+        dismiss_img.set_pixel_size(CLOCK_CONTROL_ICON_PX_SMALL)
+        dismiss_btn.set_child(dismiss_img)
+        dismiss_btn.connect('clicked', self._on_quota_dismiss_clicked)
+        quota_controls.append(dismiss_btn)
+
+        quota_clock_btn = Gtk.Button()
+        quota_clock_btn.add_css_class('flat')
+        quota_clock_btn.set_tooltip_text('Switch to clock (countdown keeps running)')
+        quota_clock_img = Gtk.Image.new_from_icon_name('ttyga-clock-symbolic')
+        quota_clock_img.set_pixel_size(CLOCK_CONTROL_ICON_PX_SMALL)
+        quota_clock_btn.set_child(quota_clock_img)
+        quota_clock_btn.connect('clicked', self._on_quota_show_clock_clicked)
+        quota_controls.append(quota_clock_btn)
+
+        self._sw_control_stack.add_named(quota_controls, 'quota')
         self._sw_control_stack.set_visible_child_name('clock')
         return self._sw_control_stack
 
@@ -5792,9 +6055,17 @@ class DevFrame(Adw.Application):
         PangoCairo.show_layout(cr, layout)
 
     def _draw_clock_time(self, area, cr, width, height):
-        theme = self.settings.get('color_scheme', 'dark')
-        fg = _rgba(THEMES.get(theme, THEMES['dark'])['fg'])
-        if self._clock_mode == 'stopwatch':
+        t = THEMES.get(self.settings.get('color_scheme', 'dark'), THEMES['dark'])
+        fg = _rgba(t['fg'])
+        if self._clock_mode == 'quota':
+            text = self._format_stopwatch(self._quota_seconds_left())
+            if self._quota_alarm_at is not None:
+                # Pulsed by alternating colour on the existing 1 s tick —
+                # no CSS animation, because these are DrawingAreas.
+                fg = _rgba(t['term_err'] if self._quota_pulse else t['fg'])
+            else:
+                fg = _rgba(t['term_warn'])
+        elif self._clock_mode == 'stopwatch':
             text = self._format_stopwatch(self._stopwatch_seconds())
         else:
             text = self._clock_time_text
@@ -6227,6 +6498,7 @@ if __name__ == "__main__":
         CONFIG_FILE   = CONFIG_DIR / "profiles.yaml"
         SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
         STATE_FILE    = CONFIG_DIR / "app_state.json"
+        QUOTA_FILE    = CONFIG_DIR / "quota.json"
         LEGACY_CONFIG = Path('/dev/null')   # prevent source-dir profiles.yaml fallback
         import faulthandler
         faulthandler.enable()   # dump traceback on SIGSEGV / SIGFPE / SIGABRT

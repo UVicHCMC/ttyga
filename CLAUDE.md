@@ -27,7 +27,7 @@ Bump `APP_VERSION` in `ttyga.py` whenever meaningful changes land — don't ask,
 
 ## Tests
 
-No test runner and no CI — six standalone scripts, run directly. Keep this list in step with `tests/`; it has gone stale before, and a script nobody knows about is a script nobody runs:
+No test runner and no CI — seven standalone scripts, run directly. Keep this list in step with `tests/`; it has gone stale before, and a script nobody knows about is a script nobody runs:
 
 ```bash
 python3 tests/test_bg_image_css.py        # headless, <1s
@@ -36,11 +36,12 @@ python3 tests/test_pane_margins.py        # opens a window, ~5s
 python3 tests/test_sidebar_switch.py      # opens a window, ~7s
 python3 tests/test_sidebar_open_marks.py  # opens a window, ~7s
 python3 tests/test_mouse_grab_hint.py     # opens a window, ~5s
+python3 tests/test_quota_timer.py         # opens a window, ~11s
 ```
 
-They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`, `_on_terminal_mouse_event`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in a few fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
+They are **point-in-time**, written alongside the features they cover, and coupled to private methods (`_split_pane`, `_update_pane_bars`, `_all_terminals_in`, `_do_close_tab`, `_profile_buttons`, `_on_terminal_mouse_event`, `_load_quota`, `_tick_quota`) — so they will break when those internals move. That is intended: they exist to catch a silent regression in a few fragile seams, not to be a suite anyone maintains for its own sake. If one goes red, the honest options are fix it or delete it; do not leave it failing.
 
-`test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one.
+`test_pane_margins.py` doubles as the **template for any new driver script** — its docstring records the three setup traps (`NON_UNIQUE`, `faulthandler`, deferred assertions) that have each cost a session to rediscover. Read it before writing a new one, along with a fourth trap recorded in `test_quota_timer.py`: a deferred assertion must land **before the next step runs**. The template's inter-step gap is a fixed 700 ms, so a check deferred longer than that (a `Gio.FileMonitor` needs ~1.4 s — its `rate-limit` defaults to 800 ms) is overwritten by the following step and reports a failure that is not real. `test_quota_timer.py` widens the gap from the defer itself rather than leaving two delays to be kept in step by hand.
 
 Appearance cannot be verified from a script here: screenshots come back stale (Mutter has no wlr-screencopy; `gnome-screenshot` returned ten byte-identical frames over six seconds, clock seconds included). Assert on widget state and CSS classes, then ask Greg to look.
 
@@ -182,6 +183,62 @@ The probe is a `Gtk.EventControllerLegacy` at CAPTURE that always returns
 `False`. It must **not** become a `Gtk.Gesture`: a gesture joins VTE's gesture
 grouping and can claim the pointer sequence — the same failure `PANE_GUTTER`
 exists to work around.
+
+### The usage-limit countdown
+
+When a Claude Code session hits its usage limit, the sidebar clock counts down
+to the reset. The interface between the two programs is one file,
+`~/.config/ttyga/quota.json`, written by `hooks/ttyga-quota-hook.py` (installed
+as `~/.local/bin/ttyga-quota-hook`) and watched by ttyga. `QUOTA_FILE` is
+rebound under `--dev` alongside the other config paths — miss that and a dev run
+reads, and the hook writes, the real countdown.
+
+Four things established by reading the Claude Code binary. Do not re-derive
+them:
+
+- **The `Notification` hook never fires for a usage limit.** Its
+  `notification_type` values are a closed set (`permission_prompt`,
+  `idle_prompt`, `agent_completed`, `auth_success`, … plus
+  `quota_auto_resume_*`), and hitting the wall emits no notification at all —
+  the "Credit balance too low" line is a rendered TUI message, not an event.
+- **`StopFailure` is the hook that fires**, carrying `error`
+  (`rate_limit` or `credit_balance_low`), `error_details` and
+  `last_assistant_message`. `Stop` is not a substitute: the API-error branch
+  returns before the normal turn-end `Stop` dispatch is reached.
+- **`error: "rate_limit"` alone is not a usage limit** — capacity errors ("We
+  are experiencing high demand for …") set it too. The hook discriminates on
+  the structured data, not that field.
+- **The reset time is `quotaLimits.resetsAt` on the assistant message in the
+  transcript** (epoch seconds), which is why the hook is handed
+  `transcript_path` and tails it. It is *not* in the hook payload. Never parse
+  the rendered text: `"your session limit resets 2:40pm (America/Vancouver)"`
+  is 12-hour local with no date.
+
+Two rules inside the hook's transcript scan, both load-bearing: only a
+`resetsAt` in the **future** is accepted, and the scan retries. The hook and
+the transcript write are not ordered against each other, so on the first pass
+the new error may not be on disk, and a long session holds earlier limits that
+have since reset — without the guard the scan returns one of those and ttyga
+counts down to a time that has already gone by.
+
+On the ttyga side:
+
+- The limit is **account-wide**, so this is one countdown for the app, not
+  per-tab state in `self.tabs`. Every claude tab is blocked at the same moment.
+- `self._quota_monitor` **must** stay referenced. A `Gio.FileMonitor` that goes
+  out of scope is finalised and silently stops delivering `changed` — no error,
+  just a countdown that never appears. `QUOTA_POLL_S` re-reads the file anyway,
+  because a monitor can also miss a rename-replace on some filesystems.
+- `_clock_mode` is now `'clock' | 'stopwatch' | 'quota'`, and the mode names are
+  deliberately the same as the `Gtk.Stack` page names in
+  `_build_stopwatch_controls()`.
+- The alarm pulses by **alternating colour on the existing 1 s clock tick**.
+  There is no CSS to animate here: both clock lines are `Gtk.DrawingArea`s
+  (see the comment above `_draw_clock_time`).
+- A countdown auto-presents **once** per `resets_at` (`_quota_shown`), so
+  switching back to the clock stands. A *running* stopwatch is never taken off
+  screen for a new countdown, but the expiry alarm does take over — it restores
+  the previous mode when it quiets, and the stopwatch keeps counting throughout.
 
 ### Focus grab timing
 

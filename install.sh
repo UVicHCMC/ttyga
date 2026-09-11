@@ -36,6 +36,7 @@ run() {
 if "$UNINSTALL"; then
     echo "Uninstalling ttyga..."
     run rm -f "$BIN_DIR/ttyga"
+    run rm -f "$BIN_DIR/ttyga-quota-hook"
     run rm -f "$APPS_DIR/ca.greg.ttyga.desktop"
     run rm -f "$DATA_DIR/TTYGA.md"
     run rm -f "$DATA_DIR/TTYGA_TECH.md"
@@ -72,6 +73,12 @@ echo "Installing ttyga..."
 run mkdir -p "$BIN_DIR" "$APPS_DIR" "$DATA_DIR" "$CONFIG_DIR"
 
 run install -m 755 "$SCRIPT_DIR/ttyga.py"       "$BIN_DIR/ttyga"
+# Claude Code hook that feeds the sidebar usage-limit countdown. Installed
+# unconditionally; it does nothing until it is registered for the
+# StopFailure and Notification events in ~/.claude/settings.json, which
+# this script deliberately does not edit (that file is not ours).
+run install -m 755 "$SCRIPT_DIR/hooks/ttyga-quota-hook.py" \
+                                                "$BIN_DIR/ttyga-quota-hook"
 run install -m 644 "$SCRIPT_DIR/TTYGA.md"       "$DATA_DIR/TTYGA.md"
 run install -m 644 "$SCRIPT_DIR/TTYGA_TECH.md"  "$DATA_DIR/TTYGA_TECH.md"
 

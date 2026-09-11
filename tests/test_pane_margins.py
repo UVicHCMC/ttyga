@@ -46,6 +46,7 @@ ttyga.CONFIG_DIR    = Path(_tmp.name)
 ttyga.CONFIG_FILE   = ttyga.CONFIG_DIR / 'profiles.yaml'
 ttyga.SETTINGS_FILE = ttyga.CONFIG_DIR / 'settings.yaml'
 ttyga.STATE_FILE    = ttyga.CONFIG_DIR / 'app_state.json'
+ttyga.QUOTA_FILE    = ttyga.CONFIG_DIR / 'quota.json'
 ttyga.LEGACY_CONFIG = Path('/dev/null')
 
 G = ttyga.PANE_GUTTER
